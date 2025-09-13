@@ -1,0 +1,250 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  // output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  administrator
+  participant
+  proponent
+  unit_section_head
+  supervisor
+  school_head
+}
+
+model user {
+  id                  Int                  @id @unique @default(autoincrement())
+  fullName            String               @db.Text
+  email               String               @unique
+  password            String
+  role                UserRole             @default(participant)
+  designationId       Int?
+  designationName     String?              @db.Text
+  position            String?              @db.Text
+  unitId              Int?
+  unitName            String?              @db.Text
+  unit                unit?                @relation(fields: [unitId], references: [id])
+  schoolId            Int?
+  schoolName          String?              @db.Text
+  school              school?              @relation(fields: [schoolId], references: [id])
+  isPasswordChanged   Boolean?             @default(false)
+  lastLogin           DateTime?
+  refreshToken        String?              @db.Text
+  refreshTokenExpiry  DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  designation         designation?         @relation(fields: [designationId], references: [id])
+  events              event[]              @relation("EventCreator")
+  certificates        certificate[]
+  attendance          attendance[]
+  mealAttendance      mealAttendance[]
+  issuedCertificates  certificate[]        @relation("CertificateIssuer")
+  eventParticipations eventParticipation[]
+}
+
+model school {
+  id              Int         @id @unique @default(autoincrement())
+  name            String      @db.Text
+  designationId   Int
+  designationName String      @db.Text
+  designation     designation @relation(fields: [designationId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            user[]
+}
+
+model unit {
+  id              Int          @id @unique @default(autoincrement())
+  name            String       @db.Text
+  designationId   Int?
+  designationName String?      @db.Text
+  designation     designation? @relation(fields: [designationId], references: [id])
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  user            user[]
+}
+
+model designation {
+  id        Int      @id @unique @default(autoincrement())
+  name      String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      user[]
+  school    school[]
+  unit      unit[]
+}
+
+model event {
+  id                   Int                    @id @unique @default(autoincrement())
+  name                 String                 @db.Text
+  description          String?                @db.Text
+  date                 DateTime
+  location             String                 @db.Text
+  venue                String?                @db.Text
+  maxAttendees         Int                    @default(50)
+  currentAttendees     Int                    @default(0)
+  status               String                 @default("Draft") // Draft, Active, Completed, Cancelled
+  templateId           Int?
+  templates            templates?             @relation(fields: [templateId], references: [id])
+  duration             String?                @db.Text
+  numberOfDays         Int                    @default(1)
+  startTime            String?                @db.Text
+  endTime              String?                @db.Text
+  eventLongitude       String?                @db.Text // for geofencing - location of the venue
+  eventLatitude        String?                @db.Text // for geofencing - location of the venue
+  geofencingRadius     Int                    @default(50) // geofencing radius in meters (default: 50m)
+  createdBy            Int? // User who created the event
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  creator              user?                  @relation("EventCreator", fields: [createdBy], references: [id])
+  fundSourceId         Int?
+  fundSource           fundSource?            @relation(fields: [fundSourceId], references: [id])
+  pdProgramId          Int?
+  pdProgram            pdPrograms?            @relation(fields: [pdProgramId], references: [id])
+  totalApprovedBudget  Int?
+  cpdUnits             Boolean?               @default(false)
+  cpdUnitsCount        Int?                   @default(0)
+  certificates         certificate[]
+  attendance           attendance[]
+  mealAttendance       mealAttendance[]
+  attendanceTables     attendanceTables[]
+  mealAttendanceTables mealAttendanceTables[]
+  eventParticipations  eventParticipation[]
+}
+
+model certificate {
+  id                Int       @id @unique @default(autoincrement())
+  certificateNumber String    @unique @db.VarChar(255)
+  userId            Int       @unique // User who received the certificate
+  eventId           Int
+  issuedBy          Int // User who issued the certificate
+  issuedAt          DateTime  @default(now())
+  templateId        Int
+  template          templates @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              user      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event             event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  issuer            user      @relation("CertificateIssuer", fields: [issuedBy], references: [id])
+}
+
+model attendance {
+  id                   Int       @id @unique @default(autoincrement())
+  userId               Int // User who attended
+  eventId              Int
+  attendanceTableId    Int? // To Track which table the attendance is for
+  dayNumber            Int? // day number is the day of the event (e.g. 1, 2, 3 etc.)
+  dayName              String?   @db.Text
+  date                 DateTime // date of the attendance
+  amInTime             DateTime? // time of the attendance in the morning
+  amOutTime            DateTime? // time of the attendance in the morning
+  pmInTime             DateTime? // time of the attendance in the afternoon
+  pmOutTime            DateTime? // time of the attendance in the afternoon
+  participantLongitude String?   @db.Text // for geofencing - location of the participant
+  participantLatitude  String?   @db.Text // for geofencing - location of the participant
+  duration             String?   @db.Text
+  status               String    @default("Present") // Present, Partial, Absent
+  notes                String?   @db.Text
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  user                 user      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event                event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId, dayNumber]) // Prevent duplicate attendance
+}
+
+model mealAttendance {
+  id                    Int      @id @unique @default(autoincrement())
+  userId                Int // User who attended meals
+  mealAttendanceTableId Int? // To Track which table the meal attendance is for (optional)
+  eventId               Int
+  dayNumber             Int? // day number is the day of the event (e.g. 1, 2, 3 etc.)
+  date                  DateTime // date of the meal attendance
+  breakfast             Boolean  @default(false) // whether the user attended breakfast
+  amSnack               Boolean  @default(false) // whether the user attended am snack
+  lunch                 Boolean  @default(false) // whether the user attended lunch
+  pmSnack               Boolean  @default(false) // whether the user attended pm snack
+  dinner                Boolean  @default(false)
+  notes                 String?  @db.Text // notes about the meal attendance
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  user     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event                 event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId, dayNumber]) // Prevent duplicate meal attendance
+}
+
+model templates {
+  id          Int           @id @unique @default(autoincrement())
+  name        String        @db.Text
+  fileName    String        @db.Text
+  filePath    String        @db.Text
+  fileSize    Int
+  eventId     Int?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  certificate certificate[]
+  event       event[]
+}
+
+model fundSource {
+  id    Int     @id @unique @default(autoincrement())
+  name  String  @db.Text
+  event event[]
+}
+
+model pdPrograms {
+  id    Int     @id @unique @default(autoincrement())
+  name  String  @db.Text
+  event event[]
+}
+
+model attendanceTables {
+  id          Int      @id @unique @default(autoincrement())
+  eventId     Int?
+  dayNumber   Int
+  qrCodeData  String?  @db.Text // QR code content/data
+  qrCodeImage String?  @db.Text // Base64 encoded QR code image
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  event       event?   @relation(fields: [eventId], references: [id])
+}
+
+model mealAttendanceTables {
+  id          Int      @id @unique @default(autoincrement())
+  eventId     Int?
+  dayNumber   Int
+  qrCodeData  String?  @db.Text // QR code content/data
+  qrCodeImage String?  @db.Text // Base64 encoded QR code image
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  event       event?   @relation(fields: [eventId], references: [id])
+}
+
+model eventParticipation {
+  id               Int       @id @unique @default(autoincrement())
+  userId           Int
+  eventId          Int
+  joinedAt         DateTime? @default(now())
+  status           String    @default("joined") // joined, unjoined, completed, pending_email_code
+  emailCode        String?   @db.VarChar(6) // 6-digit email code
+  emailCodeExpires DateTime? // Email code expiration time
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user  user  @relation(fields: [userId], references: [id])
+  event event @relation(fields: [eventId], references: [id])
+
+  @@unique([userId, eventId]) // Prevent duplicate participations
+}
