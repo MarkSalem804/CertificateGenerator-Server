@@ -273,6 +273,7 @@ async function getAllEvents() {
           select: {
             attendance: true,
             certificates: true,
+            eventParticipations: true,
           },
         },
       },
@@ -284,9 +285,17 @@ async function getAllEvents() {
     // Update currentAttendees for each event
     const eventsWithUpdatedCounts = await Promise.all(
       events.map(async (event) => {
+        // Count only joined participations
+        const joinedCount = await prisma.eventParticipation.count({
+          where: {
+            eventId: event.id,
+            status: "joined",
+          },
+        });
+
         const updatedEvent = await prisma.event.update({
           where: { id: event.id },
-          data: { currentAttendees: event._count.attendance },
+          data: { currentAttendees: joinedCount },
         });
         return { ...event, currentAttendees: updatedEvent.currentAttendees };
       })
@@ -378,10 +387,18 @@ async function getEventById(eventId) {
       throw new Error("Event not found");
     }
 
+    // Count only joined participations
+    const joinedCount = await prisma.eventParticipation.count({
+      where: {
+        eventId: eventId,
+        status: "joined",
+      },
+    });
+
     // Update currentAttendees count
     const updatedEvent = await prisma.event.update({
       where: { id: eventId },
-      data: { currentAttendees: event._count.attendance },
+      data: { currentAttendees: joinedCount },
     });
 
     return { ...event, currentAttendees: updatedEvent.currentAttendees };
@@ -463,10 +480,18 @@ async function updateEvent(eventId, updateData) {
       },
     });
 
+    // Count only joined participations
+    const joinedCount = await prisma.eventParticipation.count({
+      where: {
+        eventId: eventId,
+        status: "joined",
+      },
+    });
+
     // Update currentAttendees count
     const finalEvent = await prisma.event.update({
       where: { id: eventId },
-      data: { currentAttendees: updatedEvent._count.attendance },
+      data: { currentAttendees: joinedCount },
       include: {
         creator: {
           select: {

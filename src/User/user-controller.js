@@ -3,6 +3,11 @@ const jwt = require("jsonwebtoken");
 const userRouter = express.Router();
 const userService = require("./user-services");
 const { validateRegistration } = require("../Middlewares/validation");
+const {
+  broadcastNotification,
+  broadcastEventCreated,
+  broadcastNotificationBoth,
+} = require("../Utils/socketUtils");
 
 // JWT Secret - should be in environment variables
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -22,6 +27,13 @@ userRouter.post("/register", validateRegistration, async (req, res) => {
         `⚠️ User registered but password email failed to send to ${req.body.email}`
       );
     }
+
+    // Broadcast user registration notification (HTTP and HTTPS)
+    broadcastNotificationBoth(
+      req,
+      `New user registered: ${req.body.email} (${req.body.role})`,
+      "success"
+    );
 
     res.status(201).json(result);
   } catch (error) {
@@ -90,6 +102,13 @@ userRouter.post("/login", async (req, res) => {
     });
 
     console.log("🍪 [Login] HTTP-only cookies set for user:", user.email);
+
+    // Broadcast user login notification (HTTP and HTTPS)
+    broadcastNotificationBoth(
+      req,
+      `User logged in: ${user.email} (${user.sessionRole || user.role})`,
+      "info"
+    );
 
     // Prepare user data for response
     const userResponse = {
@@ -194,6 +213,23 @@ userRouter.post("/logout", async (req, res) => {
       path: "/",
     });
 
+    // Broadcast user logout notification (HTTP and HTTPS)
+    if (userId) {
+      // Get user email for notification
+      try {
+        const user = await userService.getUserById(userId);
+        if (user) {
+          broadcastNotificationBoth(
+            req,
+            `User logged out: ${user.email}`,
+            "info"
+          );
+        }
+      } catch (err) {
+        console.log("⚠️ [Logout] Could not get user details for notification");
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: "Logged out successfully",
@@ -236,6 +272,23 @@ userRouter.patch("/changePassword", async (req, res) => {
       currentPassword,
       newPassword
     );
+
+    // Broadcast password change notification (HTTP and HTTPS)
+    try {
+      const user = await userService.getUserById(userId);
+      if (user) {
+        broadcastNotificationBoth(
+          req,
+          `Password changed for user: ${user.email}`,
+          "success"
+        );
+      }
+    } catch (err) {
+      console.log(
+        "⚠️ [Change Password] Could not get user details for notification"
+      );
+    }
+
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({
@@ -258,6 +311,24 @@ userRouter.post("/resetPassword", async (req, res) => {
     }
 
     const result = await userService.resetPassword(userId, adminId);
+
+    // Broadcast password reset notification (HTTP and HTTPS)
+    try {
+      const user = await userService.getUserById(userId);
+      const admin = await userService.getUserById(adminId);
+      if (user && admin) {
+        broadcastNotificationBoth(
+          req,
+          `Password reset for ${user.email} by admin ${admin.email}`,
+          "warning"
+        );
+      }
+    } catch (err) {
+      console.log(
+        "⚠️ [Reset Password] Could not get user details for notification"
+      );
+    }
+
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({
@@ -339,6 +410,23 @@ userRouter.put("/updateUser/:id", async (req, res) => {
     }
 
     const result = await userService.updateUser(userId, updateData);
+
+    // Broadcast user update notification (HTTP and HTTPS)
+    try {
+      const user = await userService.getUserById(userId);
+      if (user) {
+        broadcastNotificationBoth(
+          req,
+          `User profile updated: ${user.email}`,
+          "info"
+        );
+      }
+    } catch (err) {
+      console.log(
+        "⚠️ [Update User] Could not get user details for notification"
+      );
+    }
+
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({
@@ -362,7 +450,26 @@ userRouter.delete("/deleteUser/:id", async (req, res) => {
       });
     }
 
+    // Get user details before deletion for notification
+    let userEmail = null;
+    try {
+      const user = await userService.getUserById(userId);
+      if (user) {
+        userEmail = user.email;
+      }
+    } catch (err) {
+      console.log(
+        "⚠️ [Delete User] Could not get user details for notification"
+      );
+    }
+
     const result = await userService.deleteUser(userId);
+
+    // Broadcast user deletion notification (HTTP and HTTPS)
+    if (userEmail) {
+      broadcastNotificationBoth(req, `User deleted: ${userEmail}`, "error");
+    }
+
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({

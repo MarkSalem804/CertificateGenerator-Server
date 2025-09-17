@@ -8,6 +8,18 @@ const {
   validateCoordinates,
   getGeofencingStatusMessage,
 } = require("../Utils/geofencing");
+const {
+  broadcastEventCreated,
+  broadcastEventUpdated,
+  broadcastTableCreated,
+  broadcastParticipantAction,
+  broadcastNotification,
+  broadcastEventCreatedBoth,
+  broadcastEventUpdatedBoth,
+  broadcastTableCreatedBoth,
+  broadcastParticipantActionBoth,
+  broadcastNotificationBoth,
+} = require("../Utils/socketUtils");
 const certRouter = express.Router();
 const certService = require("../Services/certgen-services");
 const { PrismaClient } = require("@prisma/client");
@@ -320,6 +332,10 @@ certRouter.post("/addEvent", authenticateToken, async (req, res) => {
     eventData.createdBy = req.user.id;
 
     const newEvent = await certService.addEvent(eventData);
+
+    // Broadcast event creation to all connected clients (HTTP and HTTPS)
+    broadcastEventCreatedBoth(req, newEvent);
+
     res.status(201).json({
       success: true,
       message: "Event created successfully",
@@ -1514,6 +1530,13 @@ certRouter.post("/addAttendanceTable/:eventId/:dayNumber", async (req, res) => {
       attendanceTableData
     );
 
+    // Broadcast table creation to event room (HTTP and HTTPS)
+    broadcastTableCreatedBoth(req, eventId, {
+      ...createdAttendanceTable,
+      eventTitle: event.name,
+      dayNumber: parseInt(dayNumber),
+    });
+
     res.status(201).json({
       success: true,
       message: `Successfully added attendance table for Day ${dayNumber}`,
@@ -1581,6 +1604,14 @@ certRouter.post(
       // Save the meal attendance table to database
       const createdMealAttendanceTable =
         await certService.addMealAttendanceTable(mealAttendanceTableData);
+
+      // Broadcast table creation to event room (HTTP and HTTPS)
+      broadcastTableCreatedBoth(req, eventId, {
+        ...createdMealAttendanceTable,
+        eventTitle: event.name,
+        dayNumber: parseInt(dayNumber),
+        tableType: "meal",
+      });
 
       res.status(201).json({
         success: true,
@@ -1802,6 +1833,19 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
       parseInt(eventId)
     );
 
+    // Broadcast participant join to event room (HTTP and HTTPS)
+    broadcastParticipantActionBoth(
+      req,
+      eventId,
+      {
+        userId: userId,
+        userName: req.user.name,
+        userEmail: req.user.email,
+        participation: participation,
+      },
+      "joined"
+    );
+
     res.status(200).json({
       success: true,
       message: "Successfully joined event",
@@ -1827,6 +1871,19 @@ certRouter.post(
       const participation = await certService.unjoinEvent(
         userId,
         parseInt(eventId)
+      );
+
+      // Broadcast participant unjoin to event room (HTTP and HTTPS)
+      broadcastParticipantActionBoth(
+        req,
+        eventId,
+        {
+          userId: userId,
+          userName: req.user.name,
+          userEmail: req.user.email,
+          participation: participation,
+        },
+        "left"
       );
 
       res.status(200).json({
