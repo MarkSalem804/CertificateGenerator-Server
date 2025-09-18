@@ -862,31 +862,44 @@ certRouter.post("/addAttendance", async (req, res) => {
 });
 
 // Get Attendance by Event
-certRouter.get("/getAttendanceByEvent/:eventId", async (req, res) => {
-  try {
-    const { eventId } = req.params;
+certRouter.get(
+  "/getAttendanceByEvent/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      console.log(
+        `🔍 [getAttendanceByEvent Route] Request for eventId: ${eventId}`
+      );
 
-    if (!eventId || isNaN(eventId)) {
-      return res.status(400).json({
+      if (!eventId || isNaN(eventId)) {
+        console.log(
+          `❌ [getAttendanceByEvent Route] Invalid eventId: ${eventId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid eventId is required",
+        });
+      }
+
+      const attendance = await certService.getAttendanceByEvent(eventId);
+      console.log(
+        `📊 [getAttendanceByEvent Route] Service returned ${attendance.length} records`
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Attendance fetched successfully",
+        attendance: attendance,
+      });
+    } catch (error) {
+      res.status(400).json({
         success: false,
-        error: "Valid eventId is required",
+        error: error.message,
       });
     }
-
-    const attendance = await certService.getAttendanceByEvent(eventId);
-
-    res.status(200).json({
-      success: true,
-      message: "Attendance fetched successfully",
-      attendance: attendance,
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // Get Attendance by Day
 certRouter.get("/getAttendanceByDay/:eventId/:dayNumber", async (req, res) => {
@@ -1826,12 +1839,29 @@ certRouter.post(
 certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
   try {
     const { eventId } = req.params;
+    const { participantLocation } = req.body; // Optional location data
     const userId = req.user.id;
 
     const participation = await certService.joinEvent(
       userId,
       parseInt(eventId)
     );
+
+    // Automatically record attendance on join
+    let attendanceResult = null;
+    try {
+      attendanceResult = await certService.recordAttendanceOnJoin(
+        userId,
+        parseInt(eventId),
+        participantLocation
+      );
+    } catch (attendanceError) {
+      // Log attendance error but don't fail the join
+      console.log(
+        `Attendance recording failed for user ${userId} joining event ${eventId}:`,
+        attendanceError.message
+      );
+    }
 
     // Broadcast participant join to event room (HTTP and HTTPS)
     broadcastParticipantActionBoth(
@@ -1842,6 +1872,7 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
         userName: req.user.name,
         userEmail: req.user.email,
         participation: participation,
+        attendance: attendanceResult,
       },
       "joined"
     );
@@ -1850,6 +1881,7 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
       success: true,
       message: "Successfully joined event",
       data: participation,
+      attendance: attendanceResult,
     });
   } catch (error) {
     res.status(400).json({
@@ -2076,7 +2108,7 @@ certRouter.post(
   async (req, res) => {
     try {
       const { eventId } = req.params;
-      const { emailCode } = req.body;
+      const { emailCode, participantLocation } = req.body; // Optional location data
       const userId = req.user.id;
 
       if (!emailCode) {
@@ -2093,9 +2125,26 @@ certRouter.post(
       );
 
       if (result.valid) {
+        // Automatically record attendance after successful email code validation
+        let attendanceResult = null;
+        try {
+          attendanceResult = await certService.recordAttendanceOnJoin(
+            userId,
+            parseInt(eventId),
+            participantLocation
+          );
+        } catch (attendanceError) {
+          // Log attendance error but don't fail the email code validation
+          console.log(
+            `Attendance recording failed for user ${userId} after email code validation for event ${eventId}:`,
+            attendanceError.message
+          );
+        }
+
         res.status(200).json({
           success: true,
           message: result.message,
+          attendance: attendanceResult,
         });
       } else {
         res.status(400).json({
@@ -2143,7 +2192,7 @@ certRouter.post(
   async (req, res) => {
     try {
       const { eventId } = req.params;
-      const { qrData } = req.body;
+      const { qrData, participantLocation } = req.body;
       const userId = req.user.id;
 
       if (!qrData) {
@@ -2160,9 +2209,26 @@ certRouter.post(
       );
 
       if (result.success) {
+        // Automatically record attendance after successful QR code join
+        let attendanceResult = null;
+        try {
+          attendanceResult = await certService.recordAttendanceOnJoin(
+            userId,
+            parseInt(eventId),
+            participantLocation
+          );
+        } catch (attendanceError) {
+          // Log attendance error but don't fail the join
+          console.log(
+            `Attendance recording failed for user ${userId} after QR code join for event ${eventId}:`,
+            attendanceError.message
+          );
+        }
+
         res.status(200).json({
           success: true,
           message: result.message,
+          attendance: attendanceResult,
         });
       } else {
         res.status(400).json({
@@ -2171,6 +2237,407 @@ certRouter.post(
         });
       }
     } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ==================== QR CODE ATTENDANCE SCANNING ROUTES ====================
+
+// Scan QR Code for Attendance Recording
+certRouter.post("/scanAttendanceQR", authenticateToken, async (req, res) => {
+  try {
+    const { qrData, participantLocation } = req.body;
+    const userId = req.user.id;
+
+    if (!qrData) {
+      return res.status(400).json({
+        success: false,
+        error: "QR code data is required",
+      });
+    }
+
+    // Parse QR data to extract event and day information
+    let eventId, dayNumber, scanType;
+
+    try {
+      const parsedData = JSON.parse(qrData);
+      eventId = parsedData.eventId;
+      dayNumber = parsedData.dayNumber;
+      scanType = parsedData.scanType || "am_in"; // Default to AM In for first scan
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid QR code format",
+      });
+    }
+
+    if (!eventId || !dayNumber) {
+      return res.status(400).json({
+        success: false,
+        error: "QR code missing required event or day information",
+      });
+    }
+
+    // Determine if this is a first-time join or subsequent scan
+    const existingAttendance = await certService.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+
+    let result;
+    if (!existingAttendance) {
+      // First time joining - record AM In
+      result = await certService.recordAttendanceOnJoin(
+        userId,
+        eventId,
+        participantLocation
+      );
+    } else {
+      // Subsequent scan - determine scan type based on existing data
+      let nextScanType = "am_out";
+      if (existingAttendance.amOutTime && !existingAttendance.pmInTime) {
+        nextScanType = "pm_in";
+      } else if (existingAttendance.pmInTime && !existingAttendance.pmOutTime) {
+        nextScanType = "pm_out";
+      } else if (existingAttendance.pmOutTime) {
+        return res.status(400).json({
+          success: false,
+          error: "All attendance times have already been recorded for this day",
+        });
+      }
+
+      result = await certService.recordAttendanceFromQRScan(
+        userId,
+        eventId,
+        dayNumber,
+        nextScanType,
+        participantLocation
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      attendance: result.attendance,
+      geofencing: result.geofencing,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get User's Attendance Status for an Event
+certRouter.get(
+  "/getUserAttendance/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const userId = req.user.id;
+
+      if (!eventId || isNaN(eventId)) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid event ID is required",
+        });
+      }
+
+      const userAttendance = await certService.getAttendanceByUserAndEvent(
+        eventId,
+        userId
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "User attendance fetched successfully",
+        attendance: userAttendance,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Validate Attendance Record
+certRouter.put(
+  "/validateAttendance/:attendanceId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { attendanceId } = req.params;
+      console.log(
+        `🔍 [validateAttendance Route] Validating attendance: ${attendanceId}`
+      );
+
+      if (!attendanceId || isNaN(attendanceId)) {
+        console.log(
+          `❌ [validateAttendance Route] Invalid attendanceId: ${attendanceId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid attendance ID is required",
+        });
+      }
+
+      const result = await certService.validateAttendanceRecord(attendanceId);
+      console.log(`📊 [validateAttendance Route] Validation result:`, result);
+
+      // Broadcast attendance validation to all connected clients
+      broadcastNotificationBoth(req, {
+        type: "attendance_validated",
+        message: "Attendance record validated successfully",
+        attendanceId: attendanceId,
+        attendance: result,
+        timestamp: new Date().toISOString(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Attendance record validated successfully",
+        attendance: result,
+      });
+    } catch (error) {
+      console.error(`❌ [validateAttendance Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Reject Attendance Record
+certRouter.put(
+  "/rejectAttendance/:attendanceId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { attendanceId } = req.params;
+      console.log(
+        `🔍 [rejectAttendance Route] Rejecting attendance: ${attendanceId}`
+      );
+
+      if (!attendanceId || isNaN(attendanceId)) {
+        console.log(
+          `❌ [rejectAttendance Route] Invalid attendanceId: ${attendanceId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid attendance ID is required",
+        });
+      }
+
+      const result = await certService.rejectAttendanceRecord(attendanceId);
+      console.log(`📊 [rejectAttendance Route] Rejection result:`, result);
+
+      // Broadcast attendance rejection to all connected clients
+      broadcastNotificationBoth(req, {
+        type: "attendance_rejected",
+        message: "Attendance record rejected successfully",
+        attendanceId: attendanceId,
+        attendance: result,
+        timestamp: new Date().toISOString(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Attendance record rejected successfully",
+        attendance: result,
+      });
+    } catch (error) {
+      console.error(`❌ [rejectAttendance Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ==================== CERTIFICATE ROUTES ====================
+
+// Generate certificates for an event
+certRouter.post(
+  "/generateCertificates/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const { templateId } = req.body;
+      const issuedBy = req.user.id; // Get from authenticated user
+
+      console.log(
+        `🔍 [generateCertificates Route] Generating certificates for event: ${eventId}`
+      );
+      console.log(
+        `📋 [generateCertificates Route] Template ID: ${templateId}, Issued by: ${issuedBy}`
+      );
+
+      if (!templateId || isNaN(templateId)) {
+        console.log(
+          `❌ [generateCertificates Route] Invalid templateId: ${templateId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid template ID is required",
+        });
+      }
+
+      const certificates = await certService.generateCertificatesForEvent(
+        eventId,
+        issuedBy,
+        templateId
+      );
+      console.log(
+        `📊 [generateCertificates Route] Generated ${certificates.length} certificates`
+      );
+
+      res.status(200).json({
+        success: true,
+        message: `Successfully generated ${certificates.length} certificates`,
+        certificates: certificates,
+      });
+    } catch (error) {
+      console.error(`❌ [generateCertificates Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get all certificates
+certRouter.get("/getAllCertificates", authenticateToken, async (req, res) => {
+  try {
+    console.log(`🔍 [getAllCertificates Route] Fetching all certificates`);
+
+    const certificates = await certService.getAllCertificates();
+    console.log(
+      `📊 [getAllCertificates Route] Found ${certificates.length} certificates`
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Certificates fetched successfully",
+      certificates: certificates,
+    });
+  } catch (error) {
+    console.error(`❌ [getAllCertificates Route] Error:`, error);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get certificates by event
+certRouter.get(
+  "/getCertificatesByEvent/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      console.log(
+        `🔍 [getCertificatesByEvent Route] Fetching certificates for event: ${eventId}`
+      );
+
+      if (!eventId || isNaN(eventId)) {
+        console.log(
+          `❌ [getCertificatesByEvent Route] Invalid eventId: ${eventId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid event ID is required",
+        });
+      }
+
+      const certificates = await certService.getCertificatesByEvent(eventId);
+      console.log(
+        `📊 [getCertificatesByEvent Route] Found ${certificates.length} certificates for event ${eventId}`
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Certificates fetched successfully",
+        certificates: certificates,
+      });
+    } catch (error) {
+      console.error(`❌ [getCertificatesByEvent Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Download certificate PDF
+certRouter.get(
+  "/downloadCertificate/:certificateId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { certificateId } = req.params;
+      console.log(
+        `🔍 [downloadCertificate Route] Downloading certificate: ${certificateId}`
+      );
+
+      if (!certificateId || isNaN(certificateId)) {
+        console.log(
+          `❌ [downloadCertificate Route] Invalid certificateId: ${certificateId}`
+        );
+        return res.status(400).json({
+          success: false,
+          error: "Valid certificate ID is required",
+        });
+      }
+
+      // Get certificate with PDF path
+      const certificate = await certService.getCertificateById(certificateId);
+
+      if (!certificate || !certificate.pdfPath) {
+        return res.status(404).json({
+          success: false,
+          error: "Certificate PDF not found",
+        });
+      }
+
+      // Check if file exists
+      const fs = require("fs");
+      if (!fs.existsSync(certificate.pdfPath)) {
+        return res.status(404).json({
+          success: false,
+          error: "Certificate file not found on server",
+        });
+      }
+
+      // Set headers for PDF download
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Certificate_${certificate.certificateNumber}.pdf"`
+      );
+
+      // Send the file
+      res.sendFile(certificate.pdfPath);
+
+      console.log(
+        `✅ [downloadCertificate Route] Certificate downloaded: ${certificate.certificateNumber}`
+      );
+    } catch (error) {
+      console.error(`❌ [downloadCertificate Route] Error:`, error);
       res.status(400).json({
         success: false,
         error: error.message,

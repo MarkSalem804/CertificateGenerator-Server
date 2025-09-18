@@ -738,6 +738,7 @@ async function addIndividualAttendance(attendanceData) {
             designationName: true,
             unitName: true,
             schoolName: true,
+            position: true,
           },
         },
         event: {
@@ -774,6 +775,7 @@ async function updateIndividualAttendance(attendanceId, updateData) {
             designationName: true,
             unitName: true,
             schoolName: true,
+            position: true,
           },
         },
         event: {
@@ -809,6 +811,7 @@ async function getAttendanceById(attendanceId) {
             designationName: true,
             unitName: true,
             schoolName: true,
+            position: true,
           },
         },
         event: {
@@ -848,6 +851,7 @@ async function getAttendanceByUserAndDay(eventId, userId, dayNumber) {
             designationName: true,
             unitName: true,
             schoolName: true,
+            position: true,
           },
         },
         event: {
@@ -867,6 +871,50 @@ async function getAttendanceByUserAndDay(eventId, userId, dayNumber) {
   } catch (error) {
     throw new Error(
       "Error getting attendance by user and day: " + error.message
+    );
+  }
+}
+
+async function getAttendanceByUserAndEvent(eventId, userId) {
+  try {
+    const attendance = await prisma.attendance.findMany({
+      where: {
+        eventId: parseInt(eventId),
+        userId: parseInt(userId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+            eventLatitude: true,
+            eventLongitude: true,
+          },
+        },
+      },
+      orderBy: {
+        dayNumber: "asc",
+      },
+    });
+    return attendance;
+  } catch (error) {
+    throw new Error(
+      "Error getting attendance by user and event: " + error.message
     );
   }
 }
@@ -895,64 +943,7 @@ async function getUserById(userId) {
   }
 }
 
-module.exports = {
-  addDesignation,
-  getAllDesignations,
-  addUnit,
-  getAllUnits,
-  addSchool,
-  getAllSchools,
-  addEvent,
-  getAllEvents,
-  getEventById,
-  updateEvent,
-  deleteEvent,
-  updateEventStatus,
-  addTemplate,
-  getAllTemplates,
-  getTemplateById,
-  getTemplatesByEventId,
-  updateTemplate,
-  pdProgram,
-  getAllPdPrograms,
-  deleteTemplate,
-  addFundSource,
-  getAllFundSources,
-  addIndividualAttendance,
-  updateIndividualAttendance,
-  getAttendanceById,
-  getAttendanceByUserAndDay,
-  getUserById,
-  // Attendance functions
-  addAttendance,
-  getAttendanceByEvent,
-  getAttendanceByDay,
-  updateAttendance,
-  deleteAttendance,
-  // Meal Attendance functions
-  addMealAttendance,
-  getMealAttendanceByEvent,
-  getMealAttendanceByDay,
-  updateMealAttendance,
-  deleteMealAttendance,
-  // Attendance Tables functions
-  addAttendanceTable,
-  getAttendanceTablesByEvent,
-  getAttendanceTableByDay,
-  // Meal Attendance Tables functions
-  addMealAttendanceTable,
-  getMealAttendanceTablesByEvent,
-  getMealAttendanceTableByDay,
-  // QR Code Generation functions
-  generateAttendanceTableQRCode,
-  generateMealAttendanceTableQRCode,
-  // Event Participation functions
-  joinEvent,
-  unjoinEvent,
-  getUserEventParticipations,
-  checkUserEventParticipation,
-  getEventParticipants,
-};
+// First export statement removed - using the second one below
 
 // ==================== ATTENDANCE FUNCTIONS ====================
 
@@ -997,6 +988,10 @@ async function addAttendance(attendanceData) {
 // Get Attendance by Event
 async function getAttendanceByEvent(eventId) {
   try {
+    console.log(
+      `🔍 [getAttendanceByEvent] Fetching attendance for eventId: ${eventId}`
+    );
+
     const attendance = await prisma.attendance.findMany({
       where: {
         eventId: parseInt(eventId),
@@ -1007,6 +1002,11 @@ async function getAttendanceByEvent(eventId) {
             id: true,
             fullName: true,
             email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
           },
         },
         event: {
@@ -1018,6 +1018,11 @@ async function getAttendanceByEvent(eventId) {
       },
       orderBy: [{ dayNumber: "asc" }, { user: { fullName: "asc" } }],
     });
+
+    console.log(
+      `📊 [getAttendanceByEvent] Found ${attendance.length} attendance records:`,
+      attendance
+    );
     return attendance;
   } catch (error) {
     throw new Error(`Error fetching attendance: ${error.message}`);
@@ -1689,6 +1694,7 @@ async function getEventParticipants(eventId) {
             designationName: true,
             unitName: true,
             schoolName: true,
+            position: true,
           },
         },
       },
@@ -1815,8 +1821,7 @@ async function generateEventQRCodeData(eventId) {
       include: {
         creator: {
           select: {
-            firstName: true,
-            lastName: true,
+            fullName: true,
             position: true,
             unitName: true,
           },
@@ -1908,6 +1913,410 @@ async function joinEventWithQRCode(eventId, userId, qrData) {
   }
 }
 
+// ==================== CERTIFICATE DATABASE FUNCTIONS ====================
+
+// Create a new certificate
+async function createCertificate(certificateData) {
+  try {
+    console.log(
+      `🔍 [createCertificate] Creating certificate:`,
+      certificateData
+    );
+
+    const certificate = await prisma.certificate.create({
+      data: {
+        certificateNumber: certificateData.certificateNumber,
+        userId: certificateData.userId,
+        eventId: certificateData.eventId,
+        issuedBy: certificateData.issuedBy,
+        templateId: certificateData.templateId,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+      },
+    });
+
+    console.log(`✅ [createCertificate] Created certificate:`, certificate);
+    return certificate;
+  } catch (error) {
+    throw new Error(`Error creating certificate: ${error.message}`);
+  }
+}
+
+// Get all certificates
+async function getAllCertificates() {
+  try {
+    console.log(`🔍 [getAllCertificates] Fetching all certificates`);
+
+    const certificates = await prisma.certificate.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    console.log(
+      `📊 [getAllCertificates] Found ${certificates.length} certificates`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error fetching certificates: ${error.message}`);
+  }
+}
+
+// Get certificates by event
+async function getCertificatesByEvent(eventId) {
+  try {
+    console.log(
+      `🔍 [getCertificatesByEvent] Fetching certificates for event: ${eventId}`
+    );
+
+    const certificates = await prisma.certificate.findMany({
+      where: {
+        eventId: parseInt(eventId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    console.log(
+      `📊 [getCertificatesByEvent] Found ${certificates.length} certificates for event ${eventId}`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error fetching certificates by event: ${error.message}`);
+  }
+}
+
+// Get participants with attendance records for an event
+async function getParticipantsWithAttendance(eventId) {
+  try {
+    console.log(
+      `🔍 [getParticipantsWithAttendance] Fetching participants with attendance for event: ${eventId}`
+    );
+
+    // Get all unique users who have attendance records for this event
+    const participants = await prisma.attendance.findMany({
+      where: {
+        eventId: parseInt(eventId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+      },
+      distinct: ["userId"],
+    });
+
+    console.log(
+      `📊 [getParticipantsWithAttendance] Found ${participants.length} participants with attendance`
+    );
+    return participants;
+  } catch (error) {
+    throw new Error(
+      `Error fetching participants with attendance: ${error.message}`
+    );
+  }
+}
+
+// Update certificate
+async function updateCertificate(certificateId, updateData) {
+  try {
+    console.log(
+      `🔍 [updateCertificate] Updating certificate: ${certificateId}`
+    );
+
+    const certificate = await prisma.certificate.update({
+      where: {
+        id: parseInt(certificateId),
+      },
+      data: updateData,
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+      },
+    });
+
+    console.log(`✅ [updateCertificate] Updated certificate:`, certificate);
+    return certificate;
+  } catch (error) {
+    throw new Error(`Error updating certificate: ${error.message}`);
+  }
+}
+
+// Get user by ID
+async function getUserById(userId) {
+  try {
+    console.log(`🔍 [getUserById] Fetching user: ${userId}`);
+
+    const user = await prisma.user.findUnique({
+      where: {
+        id: parseInt(userId),
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        designationName: true,
+        unitName: true,
+        schoolName: true,
+        position: true,
+      },
+    });
+
+    if (!user) {
+      throw new Error(`User not found with ID: ${userId}`);
+    }
+
+    console.log(`✅ [getUserById] Found user:`, user.fullName);
+    return user;
+  } catch (error) {
+    throw new Error(`Error fetching user: ${error.message}`);
+  }
+}
+
+// Get template by ID
+async function getTemplateById(templateId) {
+  try {
+    console.log(`🔍 [getTemplateById] Fetching template: ${templateId}`);
+
+    const template = await prisma.templates.findUnique({
+      where: {
+        id: parseInt(templateId),
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        templatePath: true,
+      },
+    });
+
+    if (!template) {
+      throw new Error(`Template not found with ID: ${templateId}`);
+    }
+
+    console.log(`✅ [getTemplateById] Found template:`, template.name);
+    return template;
+  } catch (error) {
+    throw new Error(`Error fetching template: ${error.message}`);
+  }
+}
+
+// Get certificate by ID
+async function getCertificateById(certificateId) {
+  try {
+    console.log(
+      `🔍 [getCertificateById] Fetching certificate: ${certificateId}`
+    );
+
+    const certificate = await prisma.certificate.findUnique({
+      where: {
+        id: parseInt(certificateId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
+      },
+    });
+
+    if (!certificate) {
+      throw new Error(`Certificate not found with ID: ${certificateId}`);
+    }
+
+    console.log(
+      `✅ [getCertificateById] Found certificate:`,
+      certificate.certificateNumber
+    );
+    return certificate;
+  } catch (error) {
+    throw new Error(`Error fetching certificate: ${error.message}`);
+  }
+}
+
 module.exports = {
   // Event functions
   addEvent,
@@ -1944,9 +2353,64 @@ module.exports = {
   generateEventQRCodeData,
   joinEventWithQRCode,
 
-  getAllPdPrograms,
-  getAllFundSources,
+  // Individual Attendance functions
+  addIndividualAttendance,
+  updateIndividualAttendance,
+  getAttendanceById,
+  getAttendanceByUserAndDay,
+  getAttendanceByUserAndEvent,
+  getAttendanceByEvent,
+
+  // User functions
+  // addUser,
+  // getAllUsers,
+  getUserById,
+  // updateUser,
+  // deleteUser,
+  // getUserByEmail,
+  // updateUserPassword,
+  // getUserByResetToken,
+  // updateUserResetToken,
+  // clearUserResetToken,
+
+  // Designation functions
+  addDesignation,
   getAllDesignations,
+
+  // Unit functions
+  addUnit,
   getAllUnits,
+
+  // School functions
+  addSchool,
   getAllSchools,
+
+  // Template functions
+  addTemplate,
+  getAllTemplates,
+  getTemplateById,
+  getTemplatesByEventId,
+  updateTemplate,
+  deleteTemplate,
+
+  // PD Program functions
+  pdProgram,
+  getAllPdPrograms,
+
+  // Fund Source functions
+  addFundSource,
+  getAllFundSources,
+
+  // Certificate functions
+  createCertificate,
+  getAllCertificates,
+  getCertificatesByEvent,
+  getParticipantsWithAttendance,
+  updateCertificate,
+  getUserById,
+  getTemplateById,
+  getCertificateById,
+
+  // Email functions
+  // sendEmail,
 };

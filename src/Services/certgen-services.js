@@ -1,4 +1,8 @@
 const certORM = require("../Database/certgen-database");
+const {
+  generateCertificatePDF,
+  prepareCertificateData,
+} = require("../Utils/generateCertificate");
 
 async function addDesignation(designationName) {
   try {
@@ -258,65 +262,6 @@ async function getUserById(userId) {
   }
 }
 
-module.exports = {
-  addDesignation,
-  getAllDesignations,
-  addUnit,
-  getAllUnits,
-  addSchool,
-  getAllSchools,
-  addEvent,
-  getAllEvents,
-  getEventById,
-  updateEvent,
-  deleteEvent,
-  updateEventStatus,
-  addTemplate,
-  getAllTemplates,
-  getTemplateById,
-  getTemplatesByEventId,
-  updateTemplate,
-  deleteTemplate,
-  addPDProgram,
-  getAllPDPrograms,
-  addFundSource,
-  getAllFundSources,
-  addIndividualAttendance,
-  updateIndividualAttendance,
-  getAttendanceById,
-  getAttendanceByUserAndDay,
-  getUserById,
-  // Attendance functions
-  addAttendance,
-  getAttendanceByEvent,
-  getAttendanceByDay,
-  updateAttendance,
-  deleteAttendance,
-  // Meal Attendance functions
-  addMealAttendance,
-  getMealAttendanceByEvent,
-  getMealAttendanceByDay,
-  updateMealAttendance,
-  deleteMealAttendance,
-  // Attendance Tables functions
-  addAttendanceTable,
-  getAttendanceTablesByEvent,
-  getAttendanceTableByDay,
-  // Meal Attendance Tables functions
-  addMealAttendanceTable,
-  getMealAttendanceTablesByEvent,
-  getMealAttendanceTableByDay,
-  // QR Code Generation functions
-  generateAttendanceTableQRCode,
-  generateMealAttendanceTableQRCode,
-  // Event Participation functions
-  joinEvent,
-  unjoinEvent,
-  getUserEventParticipations,
-  checkUserEventParticipation,
-  getEventParticipants,
-};
-
 // ==================== ATTENDANCE SERVICES ====================
 
 // Add Attendance
@@ -334,6 +279,15 @@ async function getAttendanceByEvent(eventId) {
     return await certORM.getAttendanceByEvent(eventId);
   } catch (error) {
     throw new Error(`Error fetching attendance: ${error.message}`);
+  }
+}
+
+// Get Attendance by User and Event
+async function getAttendanceByUserAndEvent(eventId, userId) {
+  try {
+    return await certORM.getAttendanceByUserAndEvent(eventId, userId);
+  } catch (error) {
+    throw new Error(`Error fetching user attendance: ${error.message}`);
   }
 }
 
@@ -572,27 +526,503 @@ async function joinEventWithQRCodeService(eventId, userId, qrData) {
   }
 }
 
+// ==================== AUTOMATIC ATTENDANCE RECORDING SERVICES ====================
+
+// Record attendance when user joins event (via email code or QR code)
+async function recordAttendanceOnJoin(
+  userId,
+  eventId,
+  participantLocation = null
+) {
+  try {
+    // Get event details
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Calculate which day the user is joining (current day relative to event start)
+    const eventStartDate = new Date(event.date);
+    const currentDate = new Date();
+    const timeDiff = currentDate.getTime() - eventStartDate.getTime();
+    const dayNumber = Math.floor(timeDiff / (1000 * 60 * 60 * 24)) + 1;
+
+    console.log(
+      `Day calculation: eventStartDate=${eventStartDate}, currentDate=${currentDate}, timeDiff=${timeDiff}, dayNumber=${dayNumber}`
+    );
+
+    // Validate day number is within event duration
+    if (dayNumber < 1 || dayNumber > event.numberOfDays) {
+      throw new Error(
+        `Cannot record attendance: Event day ${dayNumber} is outside the event duration (${event.numberOfDays} days)`
+      );
+    }
+
+    // Check if attendance record already exists for this user and day
+    const existingAttendance = await certORM.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+    if (existingAttendance) {
+      throw new Error(`Attendance record for Day ${dayNumber} already exists`);
+    }
+
+    // Get or create attendance table for this day
+    console.log(
+      `Looking for attendance table: eventId=${eventId}, dayNumber=${dayNumber}`
+    );
+    let attendanceTable = await certORM.getAttendanceTableByDay(
+      eventId,
+      dayNumber
+    );
+
+    console.log(`Found attendance table:`, attendanceTable);
+
+    if (!attendanceTable) {
+      // Auto-create attendance table for this day
+      console.log(`Auto-creating attendance table for Day ${dayNumber}`);
+      const attendanceTableData = {
+        eventId: parseInt(eventId),
+        dayNumber: dayNumber,
+      };
+      attendanceTable = await certORM.addAttendanceTable(attendanceTableData);
+      console.log(`Created attendance table:`, attendanceTable);
+    }
+
+    // Calculate the date for this day
+    const attendanceDate = new Date(
+      eventStartDate.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000
+    );
+
+    // Validate geofencing if location is provided
+    let geofencingResult = null;
+    let attendanceStatus = "Present";
+    let attendanceNotes = "";
+
+    if (participantLocation && event.eventLongitude && event.eventLatitude) {
+      const { checkGeofencing } = require("../Utils/geofencing");
+      geofencingResult = checkGeofencing(
+        parseFloat(event.eventLatitude),
+        parseFloat(event.eventLongitude),
+        parseFloat(participantLocation.latitude),
+        parseFloat(participantLocation.longitude),
+        event.geofencingRadius
+      );
+
+      if (!geofencingResult.isWithinRadius) {
+        // Record attendance but mark it as needing validation
+        attendanceStatus = "Needs Validation";
+        attendanceNotes = `Location validation required: Participant is ${geofencingResult.distance}m away from event venue (radius: ${event.geofencingRadius}m)`;
+        console.log(
+          `⚠️ Geofencing warning: User ${userId} is ${geofencingResult.distance}m away from event ${eventId} (radius: ${event.geofencingRadius}m)`
+        );
+      }
+    } else if (!participantLocation) {
+      // No location provided - mark as needing validation
+      attendanceStatus = "Needs Validation";
+      attendanceNotes =
+        "Location permission denied or unavailable - manual verification required";
+      console.log(
+        `⚠️ Location unavailable: User ${userId} joined event ${eventId} without location data`
+      );
+    }
+
+    // Create attendance record with AM In time as current time
+    const attendanceData = {
+      userId: parseInt(userId),
+      eventId: parseInt(eventId),
+      attendanceTableId: attendanceTable.id,
+      dayNumber: dayNumber,
+      dayName: `Day ${dayNumber}`,
+      date: attendanceDate,
+      amInTime: new Date(), // First scan - AM In
+      participantLongitude: participantLocation
+        ? participantLocation.longitude.toString()
+        : null,
+      participantLatitude: participantLocation
+        ? participantLocation.latitude.toString()
+        : null,
+      status: attendanceStatus,
+      notes: attendanceNotes || "Automatically recorded on event join",
+    };
+
+    console.log(`Creating attendance record:`, attendanceData);
+    const newAttendance = await certORM.addIndividualAttendance(attendanceData);
+    console.log(`Successfully created attendance record:`, newAttendance);
+
+    let message = `Attendance recorded for Day ${dayNumber}`;
+    if (attendanceStatus === "Needs Validation") {
+      message += ` (Status: Needs Validation - Location verification required)`;
+    }
+
+    return {
+      success: true,
+      message: message,
+      attendance: newAttendance,
+      geofencing: geofencingResult,
+      status: attendanceStatus,
+      notes: attendanceNotes,
+    };
+  } catch (error) {
+    throw new Error(`Error recording attendance on join: ${error.message}`);
+  }
+}
+
+// Record attendance from QR code scan (for subsequent scans)
+async function recordAttendanceFromQRScan(
+  userId,
+  eventId,
+  dayNumber,
+  scanType,
+  participantLocation = null
+) {
+  try {
+    // Get event details
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Validate day number
+    if (dayNumber < 1 || dayNumber > event.numberOfDays) {
+      throw new Error(
+        `Invalid day number: ${dayNumber}. Event has ${event.numberOfDays} days.`
+      );
+    }
+
+    // Get existing attendance record
+    const existingAttendance = await certORM.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+    if (!existingAttendance) {
+      throw new Error(
+        `No attendance record found for Day ${dayNumber}. Please join the event first.`
+      );
+    }
+
+    // Validate geofencing if location is provided
+    let geofencingResult = null;
+    if (participantLocation && event.eventLongitude && event.eventLatitude) {
+      const { checkGeofencing } = require("../Utils/geofencing");
+      geofencingResult = checkGeofencing(
+        parseFloat(event.eventLatitude),
+        parseFloat(event.eventLongitude),
+        parseFloat(participantLocation.latitude),
+        parseFloat(participantLocation.longitude),
+        event.geofencingRadius
+      );
+
+      if (!geofencingResult.isWithinRadius) {
+        throw new Error(
+          `Attendance denied: You must be within ${event.geofencingRadius}m of the event venue. ` +
+            `You are ${geofencingResult.distance}m away.`
+        );
+      }
+    }
+
+    // Determine which time field to update based on scan type
+    const updateData = {
+      participantLongitude: participantLocation
+        ? participantLocation.longitude.toString()
+        : existingAttendance.participantLongitude,
+      participantLatitude: participantLocation
+        ? participantLocation.latitude.toString()
+        : existingAttendance.participantLatitude,
+    };
+
+    const currentTime = new Date();
+
+    switch (scanType.toLowerCase()) {
+      case "am_out":
+        if (existingAttendance.amOutTime) {
+          throw new Error("AM Out time already recorded");
+        }
+        updateData.amOutTime = currentTime;
+        break;
+      case "pm_in":
+        if (existingAttendance.pmInTime) {
+          throw new Error("PM In time already recorded");
+        }
+        updateData.pmInTime = currentTime;
+        break;
+      case "pm_out":
+        if (existingAttendance.pmOutTime) {
+          throw new Error("PM Out time already recorded");
+        }
+        updateData.pmOutTime = currentTime;
+        break;
+      default:
+        throw new Error(
+          `Invalid scan type: ${scanType}. Valid types: am_out, pm_in, pm_out`
+        );
+    }
+
+    // Calculate duration if this is the final scan (PM Out)
+    if (scanType.toLowerCase() === "pm_out") {
+      const amInTime = existingAttendance.amInTime;
+      const pmOutTime = currentTime;
+
+      if (amInTime) {
+        const durationMs = pmOutTime.getTime() - amInTime.getTime();
+        const durationHours = durationMs / (1000 * 60 * 60);
+
+        // Cap at 8 hours maximum
+        const cappedHours = Math.min(durationHours, 8);
+        updateData.duration = `${cappedHours.toFixed(2)} hours`;
+
+        // Update status based on duration
+        if (cappedHours >= 6) {
+          updateData.status = "Present";
+        } else if (cappedHours >= 3) {
+          updateData.status = "Partial";
+        } else {
+          updateData.status = "Absent";
+        }
+      }
+    }
+
+    const updatedAttendance = await certORM.updateIndividualAttendance(
+      existingAttendance.id,
+      updateData
+    );
+
+    return {
+      success: true,
+      message: `${scanType.toUpperCase()} time recorded successfully`,
+      attendance: updatedAttendance,
+      geofencing: geofencingResult,
+    };
+  } catch (error) {
+    throw new Error(
+      `Error recording attendance from QR scan: ${error.message}`
+    );
+  }
+}
+
+// Validate Attendance Record
+async function validateAttendanceRecord(attendanceId) {
+  try {
+    console.log(
+      `🔍 [validateAttendanceRecord] Validating attendance: ${attendanceId}`
+    );
+
+    const updatedAttendance = await certORM.updateIndividualAttendance(
+      attendanceId,
+      {
+        status: "Present",
+        notes: "Validated by administrator",
+        updatedAt: new Date(),
+      }
+    );
+
+    console.log(
+      `📊 [validateAttendanceRecord] Updated attendance:`,
+      updatedAttendance
+    );
+    return updatedAttendance;
+  } catch (error) {
+    throw new Error(`Error validating attendance: ${error.message}`);
+  }
+}
+
+// Reject Attendance Record
+async function rejectAttendanceRecord(attendanceId) {
+  try {
+    console.log(
+      `🔍 [rejectAttendanceRecord] Rejecting attendance: ${attendanceId}`
+    );
+
+    const updatedAttendance = await certORM.updateIndividualAttendance(
+      attendanceId,
+      {
+        status: "Absent",
+        notes: "Rejected by administrator - invalid attendance",
+        updatedAt: new Date(),
+      }
+    );
+
+    console.log(
+      `📊 [rejectAttendanceRecord] Updated attendance:`,
+      updatedAttendance
+    );
+    return updatedAttendance;
+  } catch (error) {
+    throw new Error(`Error rejecting attendance: ${error.message}`);
+  }
+}
+
+// ==================== CERTIFICATE SERVICES ====================
+
+// Generate certificates for all participants with attendance records
+async function generateCertificatesForEvent(eventId, issuedBy, templateId) {
+  try {
+    console.log(
+      `🔍 [generateCertificatesForEvent] Generating certificates for event: ${eventId}`
+    );
+
+    // Get all participants with attendance records for this event
+    const participantsWithAttendance =
+      await certORM.getParticipantsWithAttendance(eventId);
+    console.log(
+      `📊 [generateCertificatesForEvent] Found ${participantsWithAttendance.length} participants with attendance`
+    );
+
+    if (participantsWithAttendance.length === 0) {
+      throw new Error(
+        "No participants with attendance records found for this event"
+      );
+    }
+
+    // Get event and issuer details
+    const event = await certORM.getEventById(eventId);
+    const issuer = await certORM.getUserById(issuedBy);
+    const template = await certORM.getTemplateById(templateId);
+
+    // Generate certificates for each participant
+    const certificates = [];
+    for (const participant of participantsWithAttendance) {
+      try {
+        // Generate unique certificate number
+        const certificateNumber = await generateUniqueCertificateNumber();
+
+        // Calculate total duration from attendance records
+        const totalDuration = await calculateTotalDuration(
+          eventId,
+          participant.userId
+        );
+
+        // Create certificate in database
+        const certificate = await certORM.createCertificate({
+          certificateNumber,
+          userId: participant.userId,
+          eventId: parseInt(eventId),
+          issuedBy: parseInt(issuedBy),
+          templateId: parseInt(templateId),
+          duration: totalDuration,
+        });
+
+        // Generate PDF certificate
+        const certificateData = prepareCertificateData(
+          certificate,
+          participant.user,
+          event,
+          issuer,
+          template
+        );
+
+        const pdfPath = await generateCertificatePDF(certificateData);
+
+        // Update certificate with PDF path
+        await certORM.updateCertificate(certificate.id, {
+          pdfPath: pdfPath,
+        });
+
+        certificates.push({
+          ...certificate,
+          pdfPath: pdfPath,
+        });
+
+        console.log(
+          `✅ [generateCertificatesForEvent] Created certificate for user: ${participant.user.fullName}`
+        );
+      } catch (error) {
+        console.error(
+          `❌ [generateCertificatesForEvent] Error creating certificate for user ${participant.userId}:`,
+          error
+        );
+        // Continue with other participants even if one fails
+      }
+    }
+
+    console.log(
+      `📊 [generateCertificatesForEvent] Generated ${certificates.length} certificates`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error generating certificates: ${error.message}`);
+  }
+}
+
+// Get certificates by event
+async function getCertificatesByEvent(eventId) {
+  try {
+    console.log(
+      `🔍 [getCertificatesByEvent] Fetching certificates for event: ${eventId}`
+    );
+    return await certORM.getCertificatesByEvent(eventId);
+  } catch (error) {
+    throw new Error(`Error fetching certificates: ${error.message}`);
+  }
+}
+
+// Get all certificates
+async function getAllCertificates() {
+  try {
+    console.log(`🔍 [getAllCertificates] Fetching all certificates`);
+    return await certORM.getAllCertificates();
+  } catch (error) {
+    throw new Error(`Error fetching certificates: ${error.message}`);
+  }
+}
+
+// Get certificate by ID
+async function getCertificateById(certificateId) {
+  try {
+    console.log(
+      `🔍 [getCertificateById] Fetching certificate: ${certificateId}`
+    );
+    return await certORM.getCertificateById(certificateId);
+  } catch (error) {
+    throw new Error(`Error fetching certificate: ${error.message}`);
+  }
+}
+
+// Generate unique certificate number
+async function generateUniqueCertificateNumber() {
+  const timestamp = Date.now();
+  const random = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, "0");
+  return `CERT-${timestamp}-${random}`;
+}
+
+// Calculate total duration from attendance records
+async function calculateTotalDuration(eventId, userId) {
+  try {
+    const attendanceRecords = await certORM.getAttendanceByUserAndEvent(
+      eventId,
+      userId
+    );
+
+    let totalMinutes = 0;
+    for (const record of attendanceRecords) {
+      if (record.duration) {
+        // Parse duration (assuming it's in format like "8h 30m" or "480m")
+        const durationStr = record.duration.toString();
+        if (durationStr.includes("h")) {
+          const hours = parseInt(durationStr.match(/(\d+)h/)?.[1] || "0");
+          const minutes = parseInt(durationStr.match(/(\d+)m/)?.[1] || "0");
+          totalMinutes += hours * 60 + minutes;
+        } else if (durationStr.includes("m")) {
+          totalMinutes += parseInt(durationStr.match(/(\d+)m/)?.[1] || "0");
+        }
+      }
+    }
+
+    // Convert back to hours and minutes
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}h ${minutes}m`;
+  } catch (error) {
+    console.error(`Error calculating duration: ${error.message}`);
+    return "0h 0m";
+  }
+}
+
 module.exports = {
-  // Designation services
-  addDesignation,
-  getAllDesignations,
-
-  // Unit services
-  addUnit,
-  getAllUnits,
-
-  // School services
-  addSchool,
-  getAllSchools,
-
-  // PD Program services
-  addPDProgram,
-  getAllPDPrograms,
-
-  // Fund Source services
-  addFundSource,
-  getAllFundSources,
-
   // Event services
   addEvent,
   getAllEvents,
@@ -600,37 +1030,6 @@ module.exports = {
   updateEvent,
   deleteEvent,
   updateEventStatus,
-
-  // Template services
-  addTemplate,
-  getAllTemplates,
-  getTemplateById,
-  getTemplatesByEventId,
-  updateTemplate,
-  deleteTemplate,
-
-  // Individual Attendance services
-  addIndividualAttendance,
-  updateIndividualAttendance,
-  getAttendanceById,
-  getAttendanceByUserAndDay,
-
-  // User services
-  getUserById,
-
-  // Attendance services
-  addAttendance,
-  getAttendanceByEvent,
-  getAttendanceByDay,
-  updateAttendance,
-  deleteAttendance,
-
-  // Meal Attendance services
-  addMealAttendance,
-  getMealAttendanceByEvent,
-  getMealAttendanceByDay,
-  updateMealAttendance,
-  deleteMealAttendance,
 
   // Attendance Table services
   addAttendanceTable,
@@ -652,10 +1051,70 @@ module.exports = {
   getEventParticipants,
 
   // Email Code services
+  // generateEmailCode,
+  // validateEmailCode,
+
+  // // QR Code services
+  // generateEventQRCodeData,
+  // joinEventWithQRCode,
+
+  // Template services
+  addTemplate,
+  getAllTemplates,
+  getTemplateById,
+  getTemplatesByEventId,
+  updateTemplate,
+  deleteTemplate,
+
+  // Individual Attendance services
+  addIndividualAttendance,
+  updateIndividualAttendance,
+  getAttendanceById,
+  getAttendanceByUserAndDay,
+  getAttendanceByUserAndEvent,
+  getAttendanceByEvent,
+
+  // User services
+  getUserById,
+
+  // Attendance services
+  getAttendanceByDay,
+  recordAttendanceFromQRScan,
+
+  // Validation services
+  validateAttendanceRecord,
+  rejectAttendanceRecord,
+
+  // Fund Source and PD Program services
+  getAllFundSources,
+  getAllPDPrograms,
+
+  // Designation, Unit, and School services
+  getAllDesignations,
+  getAllUnits,
+  getAllSchools,
+
+  // Event Participation services
+  joinEvent,
+  unjoinEvent,
+  getUserEventParticipations,
+  checkUserEventParticipation,
+  getEventParticipants,
+
+  // Email Code services
   generateEmailCodeService,
   validateEmailCodeService,
 
   // QR Code services
   generateEventQRCodeDataService,
   joinEventWithQRCodeService,
+
+  // Automatic Attendance Recording services
+  recordAttendanceOnJoin,
+
+  // Certificate services
+  generateCertificatesForEvent,
+  getCertificatesByEvent,
+  getAllCertificates,
+  getCertificateById,
 };
