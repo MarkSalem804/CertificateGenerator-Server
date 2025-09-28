@@ -269,6 +269,25 @@ async function getAllEvents() {
             fileName: true,
           },
         },
+        eventParticipations: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                role: true,
+                position: true,
+                designationId: true,
+                designationName: true,
+                unitId: true,
+                unitName: true,
+                schoolId: true,
+                schoolName: true,
+              },
+            },
+          },
+        },
         _count: {
           select: {
             attendance: true,
@@ -285,11 +304,13 @@ async function getAllEvents() {
     // Update currentAttendees for each event
     const eventsWithUpdatedCounts = await Promise.all(
       events.map(async (event) => {
-        // Count only joined participations
+        // Count joined and joined_late participations
         const joinedCount = await prisma.eventParticipation.count({
           where: {
             eventId: event.id,
-            status: "joined",
+            status: {
+              in: ["joined", "joined_late"],
+            },
           },
         });
 
@@ -310,7 +331,7 @@ async function getAllEvents() {
 async function getEventById(eventId) {
   try {
     const event = await prisma.event.findUnique({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
       include: {
         creator: {
           select: {
@@ -387,17 +408,19 @@ async function getEventById(eventId) {
       throw new Error("Event not found");
     }
 
-    // Count only joined participations
+    // Count joined and joined_late participations
     const joinedCount = await prisma.eventParticipation.count({
       where: {
-        eventId: eventId,
-        status: "joined",
+        eventId: parseInt(eventId),
+        status: {
+          in: ["joined", "joined_late"],
+        },
       },
     });
 
     // Update currentAttendees count
     const updatedEvent = await prisma.event.update({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
       data: { currentAttendees: joinedCount },
     });
 
@@ -410,7 +433,7 @@ async function getEventById(eventId) {
 async function updateEvent(eventId, updateData) {
   try {
     const updatedEvent = await prisma.event.update({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
       data: {
         name: updateData.name,
         description: updateData.description,
@@ -480,17 +503,19 @@ async function updateEvent(eventId, updateData) {
       },
     });
 
-    // Count only joined participations
+    // Count joined and joined_late participations
     const joinedCount = await prisma.eventParticipation.count({
       where: {
-        eventId: eventId,
-        status: "joined",
+        eventId: parseInt(eventId),
+        status: {
+          in: ["joined", "joined_late"],
+        },
       },
     });
 
     // Update currentAttendees count
     const finalEvent = await prisma.event.update({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
       data: { currentAttendees: joinedCount },
       include: {
         creator: {
@@ -537,7 +562,7 @@ async function updateEvent(eventId, updateData) {
 async function deleteEvent(eventId) {
   try {
     await prisma.event.delete({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
     });
   } catch (error) {
     throw new Error("Error deleting event: " + error.message);
@@ -547,7 +572,7 @@ async function deleteEvent(eventId) {
 async function updateEventStatus(eventId, status) {
   try {
     const updatedEvent = await prisma.event.update({
-      where: { id: eventId },
+      where: { id: parseInt(eventId) },
       data: { status: status },
       include: {
         creator: {
@@ -667,7 +692,7 @@ async function getTemplateById(templateId) {
 async function getTemplatesByEventId(eventId) {
   try {
     const templates = await prisma.templates.findMany({
-      where: { eventId: eventId },
+      where: { eventId: parseInt(eventId) },
       include: {
         event: {
           select: {
@@ -1409,9 +1434,9 @@ async function generateAttendanceTableQRCode(eventId, dayNumber) {
       eventDate.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000
     );
 
-    // Create QR code data
+    // Create QR code data for AM In (default attendance)
     const qrCodeData = {
-      type: "attendance",
+      type: "attendance_am_in",
       eventId: event.id,
       eventName: event.name,
       dayNumber: dayNumber,
@@ -1423,6 +1448,7 @@ async function generateAttendanceTableQRCode(eventId, dayNumber) {
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: attendanceTable.id,
+      attendancePhase: "am_in",
       timestamp: new Date().toISOString(),
     };
 
@@ -1531,6 +1557,240 @@ async function generateMealAttendanceTableQRCode(eventId, dayNumber) {
   }
 }
 
+// Generate QR Code for AM Out Attendance
+async function generateAMOutAttendanceQRCode(eventId, dayNumber) {
+  try {
+    const event = await prisma.event.findUnique({
+      where: { id: parseInt(eventId) },
+    });
+
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    const attendanceTable = await prisma.attendanceTables.findFirst({
+      where: {
+        eventId: parseInt(eventId),
+        dayNumber: parseInt(dayNumber),
+      },
+    });
+
+    if (!attendanceTable) {
+      throw new Error("Attendance table not found");
+    }
+
+    const eventDate = new Date(event.date);
+    const dayDate = new Date(
+      eventDate.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000
+    );
+
+    const qrCodeData = {
+      type: "attendance_am_out",
+      eventId: event.id,
+      eventName: event.name,
+      dayNumber: dayNumber,
+      date: dayDate.toISOString().split("T")[0],
+      location: event.location,
+      latitude: event.eventLatitude,
+      longitude: event.eventLongitude,
+      geofencingRadius: event.geofencingRadius || 50,
+      startTime: event.startTime,
+      endTime: event.endTime,
+      tableId: attendanceTable.id,
+      attendancePhase: "am_out",
+      timeWindow: "12:00 PM - 12:59 PM",
+      timestamp: new Date().toISOString(),
+    };
+
+    const qrCodeImage = `data:image/svg+xml;base64,${Buffer.from(
+      `
+      <svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="200" height="200" fill="white"/>
+        <text x="100" y="50" text-anchor="middle" font-family="Arial" font-size="12" fill="black">AM OUT</text>
+        <text x="100" y="70" text-anchor="middle" font-family="Arial" font-size="10" fill="black">${
+          event.name
+        }</text>
+        <text x="100" y="90" text-anchor="middle" font-family="Arial" font-size="8" fill="black">Day ${dayNumber}</text>
+        <text x="100" y="110" text-anchor="middle" font-family="Arial" font-size="8" fill="black">${
+          dayDate.toISOString().split("T")[0]
+        }</text>
+        <text x="100" y="125" text-anchor="middle" font-family="Arial" font-size="7" fill="orange">12:00 PM - 12:59 PM</text>
+        <rect x="50" y="130" width="100" height="50" fill="none" stroke="black" stroke-width="2"/>
+        <text x="100" y="145" text-anchor="middle" font-family="Arial" font-size="8" fill="black">QR Code</text>
+        <text x="100" y="160" text-anchor="middle" font-family="Arial" font-size="8" fill="black">AM OUT</text>
+        <text x="100" y="175" text-anchor="middle" font-family="Arial" font-size="6" fill="black">Scan to record</text>
+      </svg>
+      `
+    ).toString("base64")}`;
+
+    return {
+      qrCodeData: qrCodeData,
+      qrCodeImage: qrCodeImage,
+      attendancePhase: "am_out",
+    };
+  } catch (error) {
+    throw new Error(
+      `Error generating AM Out attendance QR code: ${error.message}`
+    );
+  }
+}
+
+// Generate QR Code for PM In Attendance
+async function generatePMInAttendanceQRCode(eventId, dayNumber) {
+  try {
+    const event = await prisma.event.findUnique({
+      where: { id: parseInt(eventId) },
+    });
+
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    const attendanceTable = await prisma.attendanceTables.findFirst({
+      where: {
+        eventId: parseInt(eventId),
+        dayNumber: parseInt(dayNumber),
+      },
+    });
+
+    if (!attendanceTable) {
+      throw new Error("Attendance table not found");
+    }
+
+    const eventDate = new Date(event.date);
+    const dayDate = new Date(
+      eventDate.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000
+    );
+
+    const qrCodeData = {
+      type: "attendance_pm_in",
+      eventId: event.id,
+      eventName: event.name,
+      dayNumber: dayNumber,
+      date: dayDate.toISOString().split("T")[0],
+      location: event.location,
+      latitude: event.eventLatitude,
+      longitude: event.eventLongitude,
+      geofencingRadius: event.geofencingRadius || 50,
+      startTime: event.startTime,
+      endTime: event.endTime,
+      tableId: attendanceTable.id,
+      attendancePhase: "pm_in",
+      timeWindow: "12:15 PM - 1:15 PM",
+      timestamp: new Date().toISOString(),
+    };
+
+    const qrCodeImage = `data:image/svg+xml;base64,${Buffer.from(
+      `
+      <svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="200" height="200" fill="white"/>
+        <text x="100" y="50" text-anchor="middle" font-family="Arial" font-size="12" fill="black">PM IN</text>
+        <text x="100" y="70" text-anchor="middle" font-family="Arial" font-size="10" fill="black">${
+          event.name
+        }</text>
+        <text x="100" y="90" text-anchor="middle" font-family="Arial" font-size="8" fill="black">Day ${dayNumber}</text>
+        <text x="100" y="110" text-anchor="middle" font-family="Arial" font-size="8" fill="black">${
+          dayDate.toISOString().split("T")[0]
+        }</text>
+        <text x="100" y="125" text-anchor="middle" font-family="Arial" font-size="7" fill="blue">12:15 PM - 1:15 PM</text>
+        <rect x="50" y="130" width="100" height="50" fill="none" stroke="black" stroke-width="2"/>
+        <text x="100" y="145" text-anchor="middle" font-family="Arial" font-size="8" fill="black">QR Code</text>
+        <text x="100" y="160" text-anchor="middle" font-family="Arial" font-size="8" fill="black">PM IN</text>
+        <text x="100" y="175" text-anchor="middle" font-family="Arial" font-size="6" fill="black">Scan to record</text>
+      </svg>
+      `
+    ).toString("base64")}`;
+
+    return {
+      qrCodeData: qrCodeData,
+      qrCodeImage: qrCodeImage,
+      attendancePhase: "pm_in",
+    };
+  } catch (error) {
+    throw new Error(
+      `Error generating PM In attendance QR code: ${error.message}`
+    );
+  }
+}
+
+// Generate QR Code for PM Out Attendance
+async function generatePMOutAttendanceQRCode(eventId, dayNumber) {
+  try {
+    const event = await prisma.event.findUnique({
+      where: { id: parseInt(eventId) },
+    });
+
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    const attendanceTable = await prisma.attendanceTables.findFirst({
+      where: {
+        eventId: parseInt(eventId),
+        dayNumber: parseInt(dayNumber),
+      },
+    });
+
+    if (!attendanceTable) {
+      throw new Error("Attendance table not found");
+    }
+
+    const eventDate = new Date(event.date);
+    const dayDate = new Date(
+      eventDate.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000
+    );
+
+    const qrCodeData = {
+      type: "attendance_pm_out",
+      eventId: event.id,
+      eventName: event.name,
+      dayNumber: dayNumber,
+      date: dayDate.toISOString().split("T")[0],
+      location: event.location,
+      latitude: event.eventLatitude,
+      longitude: event.eventLongitude,
+      geofencingRadius: event.geofencingRadius || 50,
+      startTime: event.startTime,
+      endTime: event.endTime,
+      tableId: attendanceTable.id,
+      attendancePhase: "pm_out",
+      timeWindow: "5:00 PM onwards",
+      timestamp: new Date().toISOString(),
+    };
+
+    const qrCodeImage = `data:image/svg+xml;base64,${Buffer.from(
+      `
+      <svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="200" height="200" fill="white"/>
+        <text x="100" y="50" text-anchor="middle" font-family="Arial" font-size="12" fill="black">PM OUT</text>
+        <text x="100" y="70" text-anchor="middle" font-family="Arial" font-size="10" fill="black">${
+          event.name
+        }</text>
+        <text x="100" y="90" text-anchor="middle" font-family="Arial" font-size="8" fill="black">Day ${dayNumber}</text>
+        <text x="100" y="110" text-anchor="middle" font-family="Arial" font-size="8" fill="black">${
+          dayDate.toISOString().split("T")[0]
+        }</text>
+        <text x="100" y="125" text-anchor="middle" font-family="Arial" font-size="7" fill="red">5:00 PM onwards</text>
+        <rect x="50" y="130" width="100" height="50" fill="none" stroke="black" stroke-width="2"/>
+        <text x="100" y="145" text-anchor="middle" font-family="Arial" font-size="8" fill="black">QR Code</text>
+        <text x="100" y="160" text-anchor="middle" font-family="Arial" font-size="8" fill="black">PM OUT</text>
+        <text x="100" y="175" text-anchor="middle" font-family="Arial" font-size="6" fill="black">Scan to record</text>
+      </svg>
+      `
+    ).toString("base64")}`;
+
+    return {
+      qrCodeData: qrCodeData,
+      qrCodeImage: qrCodeImage,
+      attendancePhase: "pm_out",
+    };
+  } catch (error) {
+    throw new Error(
+      `Error generating PM Out attendance QR code: ${error.message}`
+    );
+  }
+}
+
 // Event Participation Functions
 async function joinEvent(userId, eventId) {
   try {
@@ -1617,6 +1877,29 @@ async function unjoinEvent(userId, eventId) {
   }
 }
 
+async function updateEventParticipationStatus(userId, eventId, status) {
+  try {
+    const updatedParticipation = await prisma.eventParticipation.update({
+      where: {
+        userId_eventId: {
+          userId: parseInt(userId),
+          eventId: parseInt(eventId),
+        },
+      },
+      data: {
+        status: status,
+        updatedAt: new Date(),
+      },
+    });
+
+    return updatedParticipation;
+  } catch (error) {
+    throw new Error(
+      `Error updating event participation status: ${error.message}`
+    );
+  }
+}
+
 async function getUserEventParticipations(userId) {
   try {
     const participations = await prisma.eventParticipation.findMany({
@@ -1680,7 +1963,7 @@ async function getEventParticipants(eventId) {
   try {
     const participants = await prisma.eventParticipation.findMany({
       where: {
-        eventId: eventId,
+        eventId: parseInt(eventId),
         status: "joined",
       },
       include: {
@@ -1929,7 +2212,7 @@ async function createCertificate(certificateData) {
         userId: certificateData.userId,
         eventId: certificateData.eventId,
         issuedBy: certificateData.issuedBy,
-        templateId: certificateData.templateId,
+        templateId: certificateData.templateId || null,
       },
       include: {
         user: {
@@ -1964,7 +2247,6 @@ async function createCertificate(certificateData) {
           select: {
             id: true,
             name: true,
-            description: true,
           },
         },
       },
@@ -2297,7 +2579,6 @@ async function getCertificateById(certificateId) {
           select: {
             id: true,
             name: true,
-            description: true,
           },
         },
       },
@@ -2317,6 +2598,75 @@ async function getCertificateById(certificateId) {
   }
 }
 
+// Get certificate by user and event
+async function getCertificateByUserAndEvent(userId, eventId) {
+  try {
+    console.log(
+      `🔍 [getCertificateByUserAndEvent] Fetching certificate for user: ${userId}, event: ${eventId}`
+    );
+
+    const certificate = await prisma.certificate.findFirst({
+      where: {
+        userId: parseInt(userId),
+        eventId: parseInt(eventId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            location: true,
+            venue: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (certificate) {
+      console.log(
+        `✅ [getCertificateByUserAndEvent] Found existing certificate:`,
+        certificate.certificateNumber
+      );
+    } else {
+      console.log(
+        `📋 [getCertificateByUserAndEvent] No existing certificate found for user ${userId} in event ${eventId}`
+      );
+    }
+
+    return certificate;
+  } catch (error) {
+    throw new Error(
+      `Error fetching certificate by user and event: ${error.message}`
+    );
+  }
+}
+
 module.exports = {
   // Event functions
   addEvent,
@@ -2331,6 +2681,9 @@ module.exports = {
   getAttendanceTablesByEvent,
   getAttendanceTableByDay,
   generateAttendanceTableQRCode,
+  generateAMOutAttendanceQRCode,
+  generatePMInAttendanceQRCode,
+  generatePMOutAttendanceQRCode,
 
   // Meal Attendance functions
   addMealAttendanceTable,
@@ -2341,6 +2694,7 @@ module.exports = {
   // Event Participation functions
   joinEvent,
   unjoinEvent,
+  updateEventParticipationStatus,
   getUserEventParticipations,
   checkUserEventParticipation,
   getEventParticipants,
@@ -2410,6 +2764,7 @@ module.exports = {
   getUserById,
   getTemplateById,
   getCertificateById,
+  getCertificateByUserAndEvent,
 
   // Email functions
   // sendEmail,

@@ -10,13 +10,31 @@ function truncateWithEllipsis(text, maxLength) {
   return text.length > maxLength ? text.slice(0, maxLength - 3) + "..." : text;
 }
 
-function setTextIfFieldExists(form, fieldName, value, fontSize = 9) {
+function setTextIfFieldExists(
+  form,
+  fieldName,
+  value,
+  fontSize = 9,
+  isBold = false
+) {
   let field;
   try {
     field = form.getTextField(fieldName);
     if (field) {
       field.setText(value);
       field.setFontSize(fontSize);
+      if (isBold) {
+        // Try to set bold font (this may not work with all PDFs)
+        try {
+          field.setFontSize(fontSize + 1); // Slightly larger for bold effect
+        } catch (fontError) {
+          // If bold setting fails, just use regular font
+          console.warn(
+            `Could not set bold font for ${fieldName}:`,
+            fontError.message
+          );
+        }
+      }
       field.enableReadOnly();
     }
   } catch (e) {
@@ -60,6 +78,15 @@ async function generateCertificatePDF(certificateData) {
       "🔍 [generateCertificatePDF] Generating certificate:",
       certificateData.certificateNumber
     );
+    console.log("📋 [generateCertificatePDF] Certificate data:", {
+      eventDate: certificateData.eventDate,
+      issuedDate: certificateData.issuedDate,
+      createdAt: certificateData.createdAt,
+      duration: certificateData.duration,
+      participantName: certificateData.participantName,
+      eventName: certificateData.eventName,
+      eventVenue: certificateData.eventVenue,
+    });
 
     // Get template path based on template ID or use default
     const templatePath = await getTemplatePath(certificateData.templateId);
@@ -74,32 +101,58 @@ async function generateCertificatePDF(certificateData) {
     const pdfDoc = await PDFDocument.load(templateBytes);
     const form = pdfDoc.getForm();
 
-    // Format dates
-    const formattedEventDate = DateTime.fromISO(
-      certificateData.eventDate
-    ).toFormat("MMMM dd, yyyy");
-    const formattedIssuedDate = DateTime.fromISO(
-      certificateData.issuedDate
-    ).toFormat("MMMM dd, yyyy");
-    const formattedCreatedAt = DateTime.fromJSDate(
-      new Date(certificateData.createdAt)
-    ).toFormat("MMMM dd, yyyy 'at' hh:mm a");
+    // Format dates with proper error handling
+    let formattedEventDate = "Invalid Date";
+    let formattedIssuedDate = "Invalid Date";
+    let formattedCreatedAt = "Invalid Date";
+
+    try {
+      if (certificateData.eventDate) {
+        formattedEventDate = DateTime.fromISO(
+          certificateData.eventDate
+        ).toFormat("MMMM dd, yyyy");
+      }
+    } catch (error) {
+      console.warn("Error formatting event date:", error);
+      formattedEventDate = new Date(
+        certificateData.eventDate
+      ).toLocaleDateString();
+    }
+
+    try {
+      if (certificateData.issuedDate) {
+        formattedIssuedDate = DateTime.fromISO(
+          certificateData.issuedDate
+        ).toFormat("MMMM dd, yyyy");
+      }
+    } catch (error) {
+      console.warn("Error formatting issued date:", error);
+      formattedIssuedDate = new Date(
+        certificateData.issuedDate
+      ).toLocaleDateString();
+    }
+
+    try {
+      if (certificateData.createdAt) {
+        formattedCreatedAt = DateTime.fromJSDate(
+          new Date(certificateData.createdAt)
+        ).toFormat("MMMM dd, yyyy 'at' hh:mm a");
+      }
+    } catch (error) {
+      console.warn("Error formatting created date:", error);
+      formattedCreatedAt = new Date(certificateData.createdAt).toLocaleString();
+    }
 
     // Set form fields
     setTextIfFieldExists(
       form,
       "PARTICIPANT_NAME",
-      certificateData.participantName,
-      14
+      certificateData.participantName.toUpperCase(),
+      22,
+      true // Make it bold
     );
     setTextIfFieldExists(form, "EVENT_NAME", certificateData.eventName, 12);
     setTextIfFieldExists(form, "EVENT_VENUE", certificateData.eventVenue, 10);
-    setTextIfFieldExists(
-      form,
-      "CERTIFICATE_NUMBER",
-      certificateData.certificateNumber,
-      10
-    );
     setTextIfFieldExists(
       form,
       "PARTICIPANT_ROLE",
@@ -108,36 +161,19 @@ async function generateCertificatePDF(certificateData) {
     );
     setTextIfFieldExists(form, "EVENT_DATE", formattedEventDate, 10);
     setTextIfFieldExists(form, "ISSUED_DATE", formattedIssuedDate, 10);
-    setTextIfFieldExists(form, "CREATED_DATE", formattedCreatedAt, 9);
     setTextIfFieldExists(form, "DURATION", certificateData.duration, 10);
+
+    // Optional fields - only set if they exist in the template
+    setTextIfFieldExists(
+      form,
+      "CERTIFICATE_NUMBER",
+      certificateData.certificateNumber,
+      10
+    );
+    setTextIfFieldExists(form, "CREATED_DATE", formattedCreatedAt, 9);
     setTextIfFieldExists(form, "ISSUER_NAME", certificateData.issuerName, 10);
 
-    // Generate QR Code
-    const qrCodeDataURL = await generateQRCode(certificateData);
-
-    // If QR code was generated, embed it in the PDF
-    if (qrCodeDataURL) {
-      try {
-        // Convert data URL to buffer
-        const base64Data = qrCodeDataURL.split(",")[1];
-        const qrCodeBuffer = Buffer.from(base64Data, "base64");
-
-        // Embed QR code image
-        const qrCodeImage = await pdfDoc.embedPng(qrCodeBuffer);
-        const pages = pdfDoc.getPages();
-        const firstPage = pages[0];
-
-        // Position QR code (adjust coordinates as needed)
-        firstPage.drawImage(qrCodeImage, {
-          x: 450, // Adjust based on template
-          y: 50, // Adjust based on template
-          width: 100,
-          height: 100,
-        });
-      } catch (qrError) {
-        console.warn("Could not embed QR code:", qrError.message);
-      }
-    }
+    // QR Code generation removed as requested
 
     // Flatten the form to make it non-editable
     form.flatten();

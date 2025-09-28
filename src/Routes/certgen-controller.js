@@ -350,7 +350,7 @@ certRouter.post("/addEvent", authenticateToken, async (req, res) => {
 });
 
 // Get All Events
-certRouter.get("/getAllEvents", async (req, res) => {
+certRouter.get("/getAllEvents", authenticateToken, async (req, res) => {
   try {
     const events = await certService.getAllEvents();
     res.status(200).json({
@@ -1833,6 +1833,149 @@ certRouter.post(
   }
 );
 
+// Generate QR Code for AM Out Attendance
+certRouter.post(
+  "/generateAMOutAttendanceQRCode/:eventId/:dayNumber",
+  async (req, res) => {
+    try {
+      const { eventId, dayNumber } = req.params;
+
+      const qrCodeData = await certService.generateAMOutAttendanceQRCode(
+        eventId,
+        dayNumber
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "AM Out attendance QR code generated successfully",
+        qrCodeData: qrCodeData,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Generate QR Code for PM In Attendance
+certRouter.post(
+  "/generatePMInAttendanceQRCode/:eventId/:dayNumber",
+  async (req, res) => {
+    try {
+      const { eventId, dayNumber } = req.params;
+
+      const qrCodeData = await certService.generatePMInAttendanceQRCode(
+        eventId,
+        dayNumber
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "PM In attendance QR code generated successfully",
+        qrCodeData: qrCodeData,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Generate QR Code for PM Out Attendance
+certRouter.post(
+  "/generatePMOutAttendanceQRCode/:eventId/:dayNumber",
+  async (req, res) => {
+    try {
+      const { eventId, dayNumber } = req.params;
+
+      const qrCodeData = await certService.generatePMOutAttendanceQRCode(
+        eventId,
+        dayNumber
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "PM Out attendance QR code generated successfully",
+        qrCodeData: qrCodeData,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Record Attendance Phase (AM Out, PM In, PM Out)
+certRouter.post(
+  "/recordAttendancePhase",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId, dayNumber, attendancePhase, qrData } = req.body;
+      const userId = req.user.userId;
+
+      if (!eventId || !dayNumber || !attendancePhase || !qrData) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Missing required fields: eventId, dayNumber, attendancePhase, qrData",
+        });
+      }
+
+      // Validate QR code data
+      if (
+        !qrData ||
+        qrData.type !== `attendance_${attendancePhase}` ||
+        qrData.eventId !== parseInt(eventId) ||
+        qrData.dayNumber !== parseInt(dayNumber)
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid QR code data for this attendance phase",
+        });
+      }
+
+      // Get user's location for attendance recording
+      let participantLocation = null;
+      try {
+        participantLocation = await requestLocationPermission();
+      } catch (locationError) {
+        console.log(
+          "Location permission denied or unavailable:",
+          locationError.message
+        );
+      }
+
+      // Record the attendance phase
+      const result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        attendancePhase,
+        participantLocation
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        attendance: result.attendance,
+        phase: result.phase,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
 // ==================== EVENT PARTICIPATION ROUTES ====================
 
 // Join Event
@@ -1841,6 +1984,32 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
     const { eventId } = req.params;
     const { participantLocation } = req.body; // Optional location data
     const userId = req.user.id;
+
+    // Get event details for validation
+    const event = await certService.getEventById(eventId);
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        error: "Event not found",
+      });
+    }
+
+    // Check if event has completely ended (past the last day)
+    const { isEventEnded, canJoinEvent } = require("../Utils/timeValidation");
+    if (isEventEnded(event.date, event.numberOfDays, event.endTime)) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot join event. The event has completely ended.",
+      });
+    }
+
+    // Check if event has started (allow joining only after start time)
+    if (!canJoinEvent(event.date, event.startTime)) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot join event. The event has not started yet.",
+      });
+    }
 
     const participation = await certService.joinEvent(
       userId,
@@ -1882,6 +2051,8 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
       message: "Successfully joined event",
       data: participation,
       attendance: attendanceResult,
+      isLate: participation.isLate,
+      requiresValidation: participation.requiresValidation,
     });
   } catch (error) {
     res.status(400).json({
@@ -2202,6 +2373,32 @@ certRouter.post(
         });
       }
 
+      // Get event details for validation
+      const event = await certService.getEventById(eventId);
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          error: "Event not found",
+        });
+      }
+
+      // Check if event has completely ended (past the last day)
+      const { isEventEnded, canJoinEvent } = require("../Utils/timeValidation");
+      if (isEventEnded(event.date, event.numberOfDays, event.endTime)) {
+        return res.status(400).json({
+          success: false,
+          error: "Cannot join event. The event has completely ended.",
+        });
+      }
+
+      // Check if event has started (allow joining only after start time)
+      if (!canJoinEvent(event.date, event.startTime)) {
+        return res.status(400).json({
+          success: false,
+          error: "Cannot join event. The event has not started yet.",
+        });
+      }
+
       const result = await certService.joinEventWithQRCodeService(
         eventId,
         userId,
@@ -2229,6 +2426,8 @@ certRouter.post(
           success: true,
           message: result.message,
           attendance: attendanceResult,
+          isLate: result.isLate,
+          requiresValidation: result.requiresValidation,
         });
       } else {
         res.status(400).json({
@@ -2279,6 +2478,44 @@ certRouter.post("/scanAttendanceQR", authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "QR code missing required event or day information",
+      });
+    }
+
+    // Get event details for validation
+    const event = await certService.getEventById(eventId);
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        error: "Event not found",
+      });
+    }
+
+    // Check if the day has passed or if we're outside the allowed time range
+    const {
+      isDayPassed,
+      isWithinEventTimeRange,
+    } = require("../Utils/timeValidation");
+
+    if (isDayPassed(event.date, dayNumber, event.endTime)) {
+      return res.status(400).json({
+        success: false,
+        error: `Day ${dayNumber} has already ended. Attendance cannot be recorded for past days.`,
+      });
+    }
+
+    if (
+      !isWithinEventTimeRange(
+        event.date,
+        dayNumber,
+        event.startTime,
+        event.endTime
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: `Attendance can only be recorded during event hours (${
+          event.startTime || "8:00 AM"
+        } - ${event.endTime || "5:00 PM"}) for Day ${dayNumber}.`,
       });
     }
 
@@ -2474,25 +2711,15 @@ certRouter.post(
   async (req, res) => {
     try {
       const { eventId } = req.params;
-      const { templateId } = req.body;
       const issuedBy = req.user.id; // Get from authenticated user
 
       console.log(
         `🔍 [generateCertificates Route] Generating certificates for event: ${eventId}`
       );
-      console.log(
-        `📋 [generateCertificates Route] Template ID: ${templateId}, Issued by: ${issuedBy}`
-      );
+      console.log(`📋 [generateCertificates Route] Issued by: ${issuedBy}`);
 
-      if (!templateId || isNaN(templateId)) {
-        console.log(
-          `❌ [generateCertificates Route] Invalid templateId: ${templateId}`
-        );
-        return res.status(400).json({
-          success: false,
-          error: "Valid template ID is required",
-        });
-      }
+      // Use hardcoded template ID since template is a file in project directory
+      const templateId = 1;
 
       const certificates = await certService.generateCertificatesForEvent(
         eventId,
@@ -2510,6 +2737,50 @@ certRouter.post(
       });
     } catch (error) {
       console.error(`❌ [generateCertificates Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Generate individual certificate for a specific participant
+certRouter.post(
+  "/generateIndividualCertificate/:eventId/:userId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId, userId } = req.params;
+      const issuedBy = req.user.id; // Get from authenticated user
+
+      console.log(
+        `🔍 [generateIndividualCertificate Route] Generating certificate for user: ${userId} in event: ${eventId}`
+      );
+      console.log(
+        `📋 [generateIndividualCertificate Route] Issued by: ${issuedBy}`
+      );
+
+      // Use hardcoded template ID since template is a file in project directory
+      const templateId = 1;
+
+      const certificate = await certService.generateIndividualCertificate(
+        eventId,
+        userId,
+        issuedBy,
+        templateId
+      );
+      console.log(
+        `📊 [generateIndividualCertificate Route] Generated certificate for user: ${userId}`
+      );
+
+      res.status(200).json({
+        success: true,
+        message: `Successfully generated certificate for participant`,
+        certificate: certificate,
+      });
+    } catch (error) {
+      console.error(`❌ [generateIndividualCertificate Route] Error:`, error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -2604,19 +2875,31 @@ certRouter.get(
         });
       }
 
-      // Get certificate with PDF path
+      // Get certificate details
       const certificate = await certService.getCertificateById(certificateId);
 
-      if (!certificate || !certificate.pdfPath) {
+      if (!certificate) {
         return res.status(404).json({
           success: false,
-          error: "Certificate PDF not found",
+          error: "Certificate not found",
         });
       }
 
+      // Construct PDF path based on certificate details
+      const path = require("path");
+      const sanitizedName = certificate.user.fullName.replace(
+        /[^a-zA-Z0-9]/g,
+        "_"
+      );
+      const pdfPath = path.join(
+        __dirname,
+        "../../certificates",
+        `Certificate_${certificate.certificateNumber}_${sanitizedName}.pdf`
+      );
+
       // Check if file exists
       const fs = require("fs");
-      if (!fs.existsSync(certificate.pdfPath)) {
+      if (!fs.existsSync(pdfPath)) {
         return res.status(404).json({
           success: false,
           error: "Certificate file not found on server",
@@ -2631,7 +2914,7 @@ certRouter.get(
       );
 
       // Send the file
-      res.sendFile(certificate.pdfPath);
+      res.sendFile(pdfPath);
 
       console.log(
         `✅ [downloadCertificate Route] Certificate downloaded: ${certificate.certificateNumber}`

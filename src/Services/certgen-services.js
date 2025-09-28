@@ -447,10 +447,78 @@ async function generateMealAttendanceTableQRCode(eventId, dayNumber) {
   }
 }
 
+// Generate QR Code for AM Out Attendance
+async function generateAMOutAttendanceQRCode(eventId, dayNumber) {
+  try {
+    return await certORM.generateAMOutAttendanceQRCode(eventId, dayNumber);
+  } catch (error) {
+    throw new Error(
+      `Error generating AM Out attendance QR code: ${error.message}`
+    );
+  }
+}
+
+// Generate QR Code for PM In Attendance
+async function generatePMInAttendanceQRCode(eventId, dayNumber) {
+  try {
+    return await certORM.generatePMInAttendanceQRCode(eventId, dayNumber);
+  } catch (error) {
+    throw new Error(
+      `Error generating PM In attendance QR code: ${error.message}`
+    );
+  }
+}
+
+// Generate QR Code for PM Out Attendance
+async function generatePMOutAttendanceQRCode(eventId, dayNumber) {
+  try {
+    return await certORM.generatePMOutAttendanceQRCode(eventId, dayNumber);
+  } catch (error) {
+    throw new Error(
+      `Error generating PM Out attendance QR code: ${error.message}`
+    );
+  }
+}
+
 // Event Participation Service Functions
 async function joinEvent(userId, eventId) {
   try {
-    return await certORM.joinEvent(userId, eventId);
+    // Get event details to check if user is joining late
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Check if user is joining after event has started
+    const { canJoinEvent } = require("../Utils/timeValidation");
+    const isLate = canJoinEvent(event.date, event.startTime);
+
+    // Join the event with late status
+    const participation = await certORM.joinEvent(userId, eventId);
+
+    // If joining late, mark as requiring validation
+    if (isLate) {
+      // Update participation to indicate late join requiring validation
+      const updatedParticipation = await certORM.updateEventParticipationStatus(
+        userId,
+        eventId,
+        "joined_late"
+      );
+      return {
+        ...updatedParticipation,
+        isLate: true,
+        requiresValidation: true,
+        message:
+          "Joined successfully, but requires admin validation due to late registration.",
+      };
+    }
+
+    return {
+      ...participation,
+      isLate: false,
+      requiresValidation: false,
+      message: "Successfully joined event.",
+    };
   } catch (error) {
     throw new Error(`Error joining event: ${error.message}`);
   }
@@ -520,7 +588,42 @@ async function generateEventQRCodeDataService(eventId) {
 
 async function joinEventWithQRCodeService(eventId, userId, qrData) {
   try {
-    return await certORM.joinEventWithQRCode(eventId, userId, qrData);
+    // Get event details to check if user is joining late
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Check if user is joining after event has started
+    const { canJoinEvent } = require("../Utils/timeValidation");
+    const isLate = canJoinEvent(event.date, event.startTime);
+
+    // Join the event with QR code
+    const result = await certORM.joinEventWithQRCode(eventId, userId, qrData);
+
+    // If joining late, mark as requiring validation
+    if (isLate && result.success) {
+      // Update participation to indicate late join requiring validation
+      const updatedParticipation = await certORM.updateEventParticipationStatus(
+        userId,
+        eventId,
+        "joined_late"
+      );
+      return {
+        ...result,
+        isLate: true,
+        requiresValidation: true,
+        message:
+          result.message +
+          " Note: Requires admin validation due to late registration.",
+      };
+    }
+
+    return {
+      ...result,
+      isLate: false,
+      requiresValidation: false,
+    };
   } catch (error) {
     throw new Error(`Error joining event with QR code: ${error.message}`);
   }
@@ -854,6 +957,189 @@ async function rejectAttendanceRecord(attendanceId) {
   }
 }
 
+// Check if attendance phase has already been recorded
+function checkPhaseAlreadyRecorded(attendanceRecord, attendancePhase) {
+  switch (attendancePhase) {
+    case "am_out":
+      return attendanceRecord.amOutTime !== null;
+    case "pm_in":
+      return attendanceRecord.pmInTime !== null;
+    case "pm_out":
+      return attendanceRecord.pmOutTime !== null;
+    default:
+      return false;
+  }
+}
+
+// Validate time window for attendance phase
+function validateAttendancePhaseTime(attendancePhase) {
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  const currentTime = currentHour * 60 + currentMinute; // Convert to minutes for easier comparison
+
+  switch (attendancePhase) {
+    case "am_out":
+      // AM Out: 12:00 PM - 12:59 PM (720-779 minutes)
+      if (currentTime >= 720 && currentTime <= 779) {
+        return { isValid: true };
+      } else {
+        return {
+          isValid: false,
+          message:
+            "AM Out attendance can only be recorded between 12:00 PM - 12:59 PM",
+        };
+      }
+
+    case "pm_in":
+      // PM In: 12:15 PM - 1:15 PM (735-795 minutes)
+      if (currentTime >= 735 && currentTime <= 795) {
+        return { isValid: true };
+      } else {
+        return {
+          isValid: false,
+          message:
+            "PM In attendance can only be recorded between 12:15 PM - 1:15 PM",
+        };
+      }
+
+    case "pm_out":
+      // PM Out: 5:00 PM onwards (900+ minutes)
+      if (currentTime >= 900) {
+        return { isValid: true };
+      } else {
+        return {
+          isValid: false,
+          message:
+            "PM Out attendance can only be recorded from 5:00 PM onwards",
+        };
+      }
+
+    default:
+      return {
+        isValid: false,
+        message: `Invalid attendance phase: ${attendancePhase}`,
+      };
+  }
+}
+
+// Record attendance for specific phase (AM Out, PM In, PM Out)
+async function recordAttendancePhase(
+  userId,
+  eventId,
+  dayNumber,
+  attendancePhase,
+  participantLocation = null
+) {
+  try {
+    console.log(
+      `Recording ${attendancePhase} attendance for user ${userId}, event ${eventId}, day ${dayNumber}`
+    );
+
+    // Get event details
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Validate time window for attendance phase
+    const timeValidation = validateAttendancePhaseTime(attendancePhase);
+    if (!timeValidation.isValid) {
+      throw new Error(timeValidation.message);
+    }
+
+    // Find existing attendance record for this user, event, and day
+    const existingAttendance = await certORM.getAttendanceByUserEventDay(
+      userId,
+      eventId,
+      dayNumber
+    );
+
+    if (!existingAttendance) {
+      throw new Error(
+        "No attendance record found. Please join the event first before recording attendance phases."
+      );
+    }
+
+    // Check if this attendance phase has already been recorded
+    const phaseAlreadyRecorded = checkPhaseAlreadyRecorded(
+      existingAttendance,
+      attendancePhase
+    );
+    if (phaseAlreadyRecorded) {
+      throw new Error(
+        `${attendancePhase.toUpperCase()} attendance has already been recorded for this day.`
+      );
+    }
+
+    // Validate geofencing if location is provided
+    if (participantLocation && event.eventLongitude && event.eventLatitude) {
+      const { checkGeofencing } = require("../Utils/geofencing");
+      const geofencingResult = checkGeofencing(
+        parseFloat(event.eventLatitude),
+        parseFloat(event.eventLongitude),
+        parseFloat(participantLocation.latitude),
+        parseFloat(participantLocation.longitude),
+        event.geofencingRadius
+      );
+
+      if (!geofencingResult.isWithinRadius) {
+        throw new Error(
+          `Attendance denied: You must be within ${event.geofencingRadius}m of the event venue. ` +
+            `You are ${geofencingResult.distance}m away.`
+        );
+      }
+    }
+
+    // Determine which time field to update based on attendance phase
+    const updateData = {
+      participantLongitude: participantLocation
+        ? participantLocation.longitude.toString()
+        : existingAttendance.participantLongitude,
+      participantLatitude: participantLocation
+        ? participantLocation.latitude.toString()
+        : existingAttendance.participantLatitude,
+    };
+
+    // Set the appropriate time field based on attendance phase
+    switch (attendancePhase) {
+      case "am_out":
+        updateData.amOutTime = new Date();
+        break;
+      case "pm_in":
+        updateData.pmInTime = new Date();
+        break;
+      case "pm_out":
+        updateData.pmOutTime = new Date();
+        break;
+      default:
+        throw new Error(`Invalid attendance phase: ${attendancePhase}`);
+    }
+
+    // Update the attendance record
+    const updatedAttendance = await certORM.updateIndividualAttendance(
+      existingAttendance.id,
+      updateData
+    );
+
+    console.log(
+      `Successfully updated ${attendancePhase} attendance:`,
+      updatedAttendance
+    );
+
+    return {
+      success: true,
+      message: `${attendancePhase.toUpperCase()} attendance recorded successfully`,
+      attendance: updatedAttendance,
+      phase: attendancePhase,
+    };
+  } catch (error) {
+    throw new Error(
+      `Error recording ${attendancePhase} attendance: ${error.message}`
+    );
+  }
+}
+
 // ==================== CERTIFICATE SERVICES ====================
 
 // Generate certificates for all participants with attendance records
@@ -879,7 +1165,13 @@ async function generateCertificatesForEvent(eventId, issuedBy, templateId) {
     // Get event and issuer details
     const event = await certORM.getEventById(eventId);
     const issuer = await certORM.getUserById(issuedBy);
-    const template = await certORM.getTemplateById(templateId);
+
+    // Since templateId is now optional and template is a file in project directory
+    const template = {
+      id: null,
+      name: "Certificate of Recognition - Matatag",
+      description: "Standard certificate template",
+    };
 
     // Generate certificates for each participant
     const certificates = [];
@@ -894,15 +1186,29 @@ async function generateCertificatesForEvent(eventId, issuedBy, templateId) {
           participant.userId
         );
 
-        // Create certificate in database
-        const certificate = await certORM.createCertificate({
-          certificateNumber,
-          userId: participant.userId,
-          eventId: parseInt(eventId),
-          issuedBy: parseInt(issuedBy),
-          templateId: parseInt(templateId),
-          duration: totalDuration,
-        });
+        // Check if certificate already exists for this user and event
+        const existingCertificate = await certORM.getCertificateByUserAndEvent(
+          participant.userId,
+          parseInt(eventId)
+        );
+
+        let certificate;
+        if (existingCertificate) {
+          console.log(
+            `📋 [generateCertificatesForEvent] Certificate already exists for user ${participant.userId} in event ${eventId}, skipping creation`
+          );
+          certificate = existingCertificate;
+        } else {
+          // Create certificate in database
+          certificate = await certORM.createCertificate({
+            certificateNumber,
+            userId: participant.userId,
+            eventId: parseInt(eventId),
+            issuedBy: parseInt(issuedBy),
+            templateId: null, // Since template is a file, not in database
+            duration: totalDuration,
+          });
+        }
 
         // Generate PDF certificate
         const certificateData = prepareCertificateData(
@@ -915,14 +1221,12 @@ async function generateCertificatesForEvent(eventId, issuedBy, templateId) {
 
         const pdfPath = await generateCertificatePDF(certificateData);
 
-        // Update certificate with PDF path
-        await certORM.updateCertificate(certificate.id, {
-          pdfPath: pdfPath,
-        });
+        // Note: PDF is generated and saved to file system, but path is not stored in database
+        // since the certificate table doesn't have a pdfPath field
 
         certificates.push({
           ...certificate,
-          pdfPath: pdfPath,
+          pdfPath: pdfPath, // Include in response for frontend use
         });
 
         console.log(
@@ -943,6 +1247,102 @@ async function generateCertificatesForEvent(eventId, issuedBy, templateId) {
     return certificates;
   } catch (error) {
     throw new Error(`Error generating certificates: ${error.message}`);
+  }
+}
+
+// Generate individual certificate for a specific participant
+async function generateIndividualCertificate(
+  eventId,
+  userId,
+  issuedBy,
+  templateId
+) {
+  try {
+    console.log(
+      `🔍 [generateIndividualCertificate] Generating certificate for user: ${userId} in event: ${eventId}`
+    );
+
+    // Get participant details
+    const participant = await certORM.getUserById(userId);
+    if (!participant) {
+      throw new Error("Participant not found");
+    }
+
+    // Check if participant has attendance for this event
+    const attendance = await certORM.getAttendanceByUserAndEvent(
+      eventId,
+      userId
+    );
+    if (!attendance || attendance.length === 0) {
+      throw new Error("Participant has no attendance records for this event");
+    }
+
+    // Get event and issuer details
+    const event = await certORM.getEventById(eventId);
+    const issuer = await certORM.getUserById(issuedBy);
+
+    // Since templateId is now optional and template is a file in project directory
+    const template = {
+      id: null,
+      name: "Certificate of Recognition - Matatag",
+      description: "Standard certificate template",
+    };
+
+    // Check if certificate already exists for this user and event
+    const existingCertificate = await certORM.getCertificateByUserAndEvent(
+      userId,
+      parseInt(eventId)
+    );
+
+    let certificate;
+    if (existingCertificate) {
+      console.log(
+        `📋 [generateIndividualCertificate] Certificate already exists for user ${userId} in event ${eventId}, returning existing certificate`
+      );
+      certificate = existingCertificate;
+    } else {
+      // Generate unique certificate number
+      const certificateNumber = await generateUniqueCertificateNumber();
+
+      // Calculate total duration
+      const totalDuration = await calculateTotalDuration(
+        eventId,
+        parseInt(userId)
+      );
+
+      // Create certificate in database
+      certificate = await certORM.createCertificate({
+        certificateNumber,
+        userId: parseInt(userId),
+        eventId: parseInt(eventId),
+        issuedBy: parseInt(issuedBy),
+        templateId: null, // Since template is a file, not in database
+        duration: totalDuration,
+      });
+    }
+
+    // Generate PDF certificate
+    const certificateData = prepareCertificateData(
+      certificate,
+      participant,
+      event,
+      issuer,
+      template
+    );
+    const pdfPath = await generateCertificatePDF(certificateData);
+
+    console.log(
+      `✅ [generateIndividualCertificate] Created certificate for user: ${participant.fullName}`
+    );
+
+    return {
+      ...certificate,
+      pdfPath: pdfPath, // Include in response for frontend use
+    };
+  } catch (error) {
+    throw new Error(
+      `Error generating individual certificate: ${error.message}`
+    );
   }
 }
 
@@ -997,8 +1397,16 @@ async function calculateTotalDuration(eventId, userId) {
       userId
     );
 
+    console.log(
+      `📊 [calculateTotalDuration] Found ${attendanceRecords.length} attendance records for user ${userId}`
+    );
+
     let totalMinutes = 0;
     for (const record of attendanceRecords) {
+      console.log(
+        `📋 [calculateTotalDuration] Record duration: ${record.duration}`
+      );
+
       if (record.duration) {
         // Parse duration (assuming it's in format like "8h 30m" or "480m")
         const durationStr = record.duration.toString();
@@ -1009,13 +1417,27 @@ async function calculateTotalDuration(eventId, userId) {
         } else if (durationStr.includes("m")) {
           totalMinutes += parseInt(durationStr.match(/(\d+)m/)?.[1] || "0");
         }
+      } else {
+        // If no duration data, assume 8 hours per day
+        console.log(
+          `📋 [calculateTotalDuration] No duration data, assuming 8 hours per day`
+        );
+        totalMinutes += 8 * 60; // 8 hours = 480 minutes
       }
+    }
+
+    // If no duration data at all, provide a default
+    if (totalMinutes === 0 && attendanceRecords.length > 0) {
+      totalMinutes = attendanceRecords.length * 8 * 60; // 8 hours per day
     }
 
     // Convert back to hours and minutes
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    return `${hours}h ${minutes}m`;
+    const result = `${hours}h ${minutes}m`;
+
+    console.log(`📊 [calculateTotalDuration] Calculated duration: ${result}`);
+    return result;
   } catch (error) {
     console.error(`Error calculating duration: ${error.message}`);
     return "0h 0m";
@@ -1036,6 +1458,9 @@ module.exports = {
   getAttendanceTablesByEvent,
   getAttendanceTableByDay,
   generateAttendanceTableQRCode,
+  generateAMOutAttendanceQRCode,
+  generatePMInAttendanceQRCode,
+  generatePMOutAttendanceQRCode,
 
   // Meal Attendance Table services
   addMealAttendanceTable,
@@ -1080,6 +1505,7 @@ module.exports = {
   // Attendance services
   getAttendanceByDay,
   recordAttendanceFromQRScan,
+  recordAttendancePhase,
 
   // Validation services
   validateAttendanceRecord,
@@ -1114,6 +1540,7 @@ module.exports = {
 
   // Certificate services
   generateCertificatesForEvent,
+  generateIndividualCertificate,
   getCertificatesByEvent,
   getAllCertificates,
   getCertificateById,

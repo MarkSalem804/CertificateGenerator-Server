@@ -124,19 +124,19 @@ model event {
 }
 
 model certificate {
-  id                Int       @id @unique @default(autoincrement())
-  certificateNumber String    @unique @db.VarChar(255)
-  userId            Int       @unique // User who received the certificate
+  id                Int        @id @unique @default(autoincrement())
+  certificateNumber String     @unique @db.VarChar(255)
+  userId            Int        @unique // User who received the certificate
   eventId           Int
   issuedBy          Int // User who issued the certificate
-  issuedAt          DateTime  @default(now())
-  templateId        Int
-  template          templates @relation(fields: [templateId], references: [id], onDelete: Cascade)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  user              user      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  event             event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  issuer            user      @relation("CertificateIssuer", fields: [issuedBy], references: [id])
+  issuedAt          DateTime   @default(now())
+  templateId        Int?
+  template          templates? @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  user              user       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event             event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  issuer            user       @relation("CertificateIssuer", fields: [issuedBy], references: [id])
 }
 
 model attendance {
