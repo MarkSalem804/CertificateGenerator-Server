@@ -3,6 +3,10 @@ const {
   generateCertificatePDF,
   prepareCertificateData,
 } = require("../Utils/generateCertificate");
+const {
+  calculateAttendanceDurations,
+  generateDurationSummary,
+} = require("../Utils/durationUtils");
 
 async function addDesignation(designationName) {
   try {
@@ -971,14 +975,145 @@ function checkPhaseAlreadyRecorded(attendanceRecord, attendancePhase) {
   }
 }
 
-// Validate time window for attendance phase
-function validateAttendancePhaseTime(attendancePhase) {
+// Validate time window for attendance phase based on event times
+function validateAttendancePhaseTime(
+  attendancePhase,
+  eventStartTime = null,
+  eventEndTime = null
+) {
   const now = new Date();
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
   const currentTime = currentHour * 60 + currentMinute; // Convert to minutes for easier comparison
 
+  // If no event times provided, use default government schedule
+  if (!eventStartTime || !eventEndTime) {
+    return validateDefaultAttendancePhaseTime(attendancePhase, currentTime);
+  }
+
+  // Parse event times
+  const startTime = parseEventTime(eventStartTime);
+  const endTime = parseEventTime(eventEndTime);
+
+  if (!startTime || !endTime) {
+    return validateDefaultAttendancePhaseTime(attendancePhase, currentTime);
+  }
+
+  const startMinutes = startTime.hour * 60 + startTime.minute;
+  const endMinutes = endTime.hour * 60 + endTime.minute;
+
+  // Check if current time is within event hours (including grace periods)
+  const startGracePeriod = startMinutes - 15;
+  const endGracePeriod = endMinutes + 30;
+
+  if (currentTime < startGracePeriod || currentTime > endGracePeriod) {
+    return {
+      isValid: false,
+      message: "Outside event hours",
+    };
+  }
+
+  // Determine phase based on event timing
+  const timeFromStart = currentTime - startMinutes;
+
+  // For events starting at 2:00 PM or later, skip AM phases
+  if (startMinutes >= 840) {
+    // 2:00 PM = 840 minutes
+    // Event starts in afternoon - only PM phases
+    if (attendancePhase === "pm_in") {
+      if (timeFromStart < 15) {
+        // First 15 minutes - on time
+        return { isValid: true, isLate: false };
+      } else if (timeFromStart < 60) {
+        // 15-60 minutes - late but allowed
+        return {
+          isValid: true,
+          isLate: true,
+          message: "PM In attendance recorded late - requires admin validation",
+        };
+      } else {
+        return {
+          isValid: false,
+          message: `PM In attendance can only be recorded within 1 hour of event start (${formatTimeFromMinutes(
+            startMinutes
+          )} - ${formatTimeFromMinutes(startMinutes + 60)})`,
+        };
+      }
+    } else if (attendancePhase === "pm_out") {
+      if (currentTime >= endMinutes && currentTime <= endMinutes + 30) {
+        // After event ends + 30 minutes grace period
+        return { isValid: true };
+      } else {
+        return {
+          isValid: false,
+          message: `PM Out attendance can only be recorded after the event ends with a 30-minute grace period (${formatTimeFromMinutes(
+            endMinutes
+          )} - ${formatTimeFromMinutes(endMinutes + 30)})`,
+        };
+      }
+    } else {
+      return {
+        isValid: false,
+        message: "Invalid attendance phase for afternoon events",
+      };
+    }
+  } else {
+    // Event starts in morning - use default phases but adjust for event times
+    return validateDefaultAttendancePhaseTime(
+      attendancePhase,
+      currentTime,
+      startMinutes,
+      endMinutes
+    );
+  }
+}
+
+// Default government schedule validation (fallback)
+function validateDefaultAttendancePhaseTime(
+  attendancePhase,
+  currentTime,
+  eventStartMinutes = null,
+  eventEndMinutes = null
+) {
   switch (attendancePhase) {
+    case "am_in":
+      // If event times are provided, use event-specific AM In window
+      if (eventStartMinutes !== null) {
+        const amInStart = eventStartMinutes - 60; // 1 hour before event start
+        const amInEnd = eventStartMinutes + 180; // 3 hours after event start
+        const gracePeriodEnd = eventStartMinutes + 15; // 15 minutes grace period
+
+        if (currentTime >= amInStart && currentTime < amInEnd) {
+          const isLate = currentTime > gracePeriodEnd;
+          return {
+            isValid: true,
+            isLate: isLate,
+            message: isLate
+              ? "AM In attendance recorded late - requires admin validation"
+              : undefined,
+          };
+        } else {
+          return {
+            isValid: false,
+            message: `AM In attendance can only be recorded from 1 hour before event start to 3 hours after (${formatTimeFromMinutes(
+              amInStart
+            )} - ${formatTimeFromMinutes(amInEnd)})`,
+          };
+        }
+      } else {
+        // Fallback to default government schedule
+        // AM In: 9:00 AM - 10:00 AM (540-600 minutes)
+        if (currentTime >= 540 && currentTime < 600) {
+          return { isValid: true };
+        } else {
+          return {
+            isValid: false,
+            message:
+              "AM In attendance can only be recorded between 9:00 AM - 10:00 AM",
+          };
+        }
+      }
+
     case "am_out":
       // AM Out: 12:00 PM - 12:59 PM (720-779 minutes)
       if (currentTime >= 720 && currentTime <= 779) {
@@ -992,26 +1127,30 @@ function validateAttendancePhaseTime(attendancePhase) {
       }
 
     case "pm_in":
-      // PM In: 12:15 PM - 1:15 PM (735-795 minutes)
-      if (currentTime >= 735 && currentTime <= 795) {
+      // PM In: 1:00 PM - 1:15 PM (780-795 minutes)
+      if (currentTime >= 780 && currentTime <= 795) {
         return { isValid: true };
       } else {
         return {
           isValid: false,
           message:
-            "PM In attendance can only be recorded between 12:15 PM - 1:15 PM",
+            "PM In attendance can only be recorded between 1:00 PM - 1:15 PM",
         };
       }
 
     case "pm_out":
-      // PM Out: 5:00 PM onwards (900+ minutes)
-      if (currentTime >= 900) {
+      // PM Out: Use event end time if provided, otherwise default to 5:00 PM - 5:30 PM
+      const pmOutStart = eventEndMinutes !== null ? eventEndMinutes : 1020; // Default 5:00 PM = 1020 minutes
+      const pmOutEnd = pmOutStart + 30; // 30 minute grace period
+
+      if (currentTime >= pmOutStart && currentTime <= pmOutEnd) {
         return { isValid: true };
       } else {
         return {
           isValid: false,
-          message:
-            "PM Out attendance can only be recorded from 5:00 PM onwards",
+          message: `PM Out attendance can only be recorded between ${formatTimeFromMinutes(
+            pmOutStart
+          )} - ${formatTimeFromMinutes(pmOutEnd)}`,
         };
       }
 
@@ -1021,6 +1160,52 @@ function validateAttendancePhaseTime(attendancePhase) {
         message: `Invalid attendance phase: ${attendancePhase}`,
       };
   }
+}
+
+// Helper function to parse event time strings
+function parseEventTime(timeString) {
+  if (!timeString) return null;
+
+  // Handle formats like "14:00", "2:00 PM", "14:00:00"
+  const time = timeString.toString();
+
+  if (time.includes(":")) {
+    const parts = time.split(":");
+    let hour = parseInt(parts[0]);
+    const minute = parseInt(parts[1]);
+
+    // Handle 24-hour format
+    if (hour >= 0 && hour <= 23) {
+      return { hour, minute };
+    }
+  }
+
+  // Handle 12-hour format
+  const match = time.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (match) {
+    let hour = parseInt(match[1]);
+    const minute = parseInt(match[2]);
+    const period = match[3].toUpperCase();
+
+    if (period === "PM" && hour !== 12) {
+      hour += 12;
+    } else if (period === "AM" && hour === 12) {
+      hour = 0;
+    }
+
+    return { hour, minute };
+  }
+
+  return null;
+}
+
+// Helper function to format minutes back to time string
+function formatTimeFromMinutes(minutes) {
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const period = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  return `${displayHour}:${minute.toString().padStart(2, "0")} ${period}`;
 }
 
 // Record attendance for specific phase (AM Out, PM In, PM Out)
@@ -1043,22 +1228,151 @@ async function recordAttendancePhase(
     }
 
     // Validate time window for attendance phase
-    const timeValidation = validateAttendancePhaseTime(attendancePhase);
+    const timeValidation = validateAttendancePhaseTime(
+      attendancePhase,
+      event.startTime,
+      event.endTime
+    );
     if (!timeValidation.isValid) {
       throw new Error(timeValidation.message);
     }
 
+    // Check if this is late attendance
+    const isLateAttendance = timeValidation.isLate || false;
+
     // Find existing attendance record for this user, event, and day
-    const existingAttendance = await certORM.getAttendanceByUserEventDay(
+    console.log(`🔍 [recordAttendancePhase] Looking for existing attendance:`, {
       userId,
       eventId,
+      dayNumber,
+      attendancePhase,
+    });
+
+    const existingAttendance = await certORM.getAttendanceByUserAndDay(
+      eventId,
+      userId,
       dayNumber
     );
 
+    // If no existing attendance record, create one based on the first attendance phase
     if (!existingAttendance) {
-      throw new Error(
-        "No attendance record found. Please join the event first before recording attendance phases."
+      console.log(
+        `🆕 [recordAttendancePhase] Creating new attendance record for ${attendancePhase}`
       );
+
+      // Debug location data
+      console.log(`📍 [recordAttendancePhase] Location data:`, {
+        participantLocation,
+        hasLocation: !!participantLocation,
+        latitude: participantLocation?.latitude,
+        longitude: participantLocation?.longitude,
+      });
+
+      // Find the attendance table for this event and day
+      const attendanceTable = await certORM.getAttendanceTableByDay(
+        eventId,
+        dayNumber
+      );
+      console.log(
+        `📋 [recordAttendancePhase] Found attendance table:`,
+        attendanceTable
+      );
+
+      // Determine which time field to set based on the first attendance phase
+      const newAttendanceData = {
+        eventId: parseInt(eventId),
+        userId: parseInt(userId),
+        dayNumber: parseInt(dayNumber),
+        dayName: `Day ${dayNumber}`, // Set day name
+        date: new Date(), // Required field - current date
+        attendanceTableId: attendanceTable?.id || null, // Link to attendance table for this day
+        amInTime: null,
+        amOutTime: null,
+        pmInTime: null,
+        pmOutTime: null,
+        participantLatitude: participantLocation
+          ? participantLocation.latitude.toString()
+          : null,
+        participantLongitude: participantLocation
+          ? participantLocation.longitude.toString()
+          : null,
+        status: isLateAttendance ? "Needs Validation" : "Present",
+        notes: isLateAttendance
+          ? `${attendancePhase.toUpperCase()} attendance recorded late - requires admin validation`
+          : `${attendancePhase.toUpperCase()} attendance recorded`,
+      };
+
+      // Set the appropriate time field based on the first attendance phase
+      switch (attendancePhase) {
+        case "am_in":
+          newAttendanceData.amInTime = new Date();
+          break;
+        case "am_out":
+          newAttendanceData.amOutTime = new Date();
+          break;
+        case "pm_in":
+          newAttendanceData.pmInTime = new Date();
+          break;
+        case "pm_out":
+          newAttendanceData.pmOutTime = new Date();
+          break;
+        default:
+          throw new Error(`Invalid attendance phase: ${attendancePhase}`);
+      }
+
+      const newAttendance = await certORM.addIndividualAttendance(
+        newAttendanceData
+      );
+      console.log(
+        `✅ [recordAttendancePhase] Created new attendance record:`,
+        newAttendance
+      );
+
+      // Calculate durations for the new attendance record
+      const durations = calculateAttendanceDurations(newAttendance);
+      const durationSummary = generateDurationSummary(durations);
+
+      // Update the duration field in the database
+      await certORM.updateIndividualAttendance(newAttendance.id, {
+        duration: durationSummary,
+      });
+
+      console.log(`📊 Duration calculated for new record:`, durations);
+
+      // Update event's current attendee count
+      await certORM.updateEventAttendeeCount(eventId, 1); // Increment by 1
+
+      // Create event participation record
+      const participation = await certORM.joinEvent(userId, eventId);
+      console.log(
+        `✅ [recordAttendancePhase] Created event participation:`,
+        participation
+      );
+
+      // If this is late attendance, update the participation status
+      if (isLateAttendance) {
+        await certORM.updateEventParticipationStatus(
+          userId,
+          eventId,
+          "joined_late"
+        );
+        console.log(
+          `✅ [recordAttendancePhase] Updated participation status to joined_late`
+        );
+      }
+
+      return {
+        success: true,
+        message: isLateAttendance
+          ? `Successfully recorded ${attendancePhase.toUpperCase()} attendance late and joined the event! Your attendance requires admin validation.`
+          : `Successfully recorded ${attendancePhase.toUpperCase()} attendance and joined the event!`,
+        attendance: newAttendance,
+        phase: attendancePhase,
+        isLate: isLateAttendance,
+        requiresValidation: isLateAttendance,
+        durations: durations,
+        durationSummary: durationSummary,
+      };
     }
 
     // Check if this attendance phase has already been recorded
@@ -1084,21 +1398,70 @@ async function recordAttendancePhase(
       );
 
       if (!geofencingResult.isWithinRadius) {
-        throw new Error(
-          `Attendance denied: You must be within ${event.geofencingRadius}m of the event venue. ` +
-            `You are ${geofencingResult.distance}m away.`
-        );
+        // For AM Out and PM Out, allow attendance but mark as requiring validation
+        if (attendancePhase === "am_out" || attendancePhase === "pm_out") {
+          console.log(
+            `⚠️ [recordAttendancePhase] ${attendancePhase.toUpperCase()} outside venue - marking for validation`
+          );
+          // Continue processing but mark as requiring validation
+        } else {
+          // For AM In and PM In, require geofencing (must be within venue)
+          throw new Error(
+            `Attendance denied: You must be within ${event.geofencingRadius}m of the event venue. ` +
+              `You are ${geofencingResult.distance}m away.`
+          );
+        }
       }
+    }
+
+    // Find the attendance table for this event and day (for existing attendance updates)
+    const attendanceTable = await certORM.getAttendanceTableByDay(
+      eventId,
+      dayNumber
+    );
+    console.log(
+      `📋 [recordAttendancePhase] Found attendance table for update:`,
+      attendanceTable
+    );
+
+    // Check if AM Out or PM Out is outside venue (for validation requirement)
+    let isOutsideVenue = false;
+    if (
+      participantLocation &&
+      event.eventLongitude &&
+      event.eventLatitude &&
+      (attendancePhase === "am_out" || attendancePhase === "pm_out")
+    ) {
+      const { checkGeofencing } = require("../Utils/geofencing");
+      const geofencingResult = checkGeofencing(
+        parseFloat(event.eventLatitude),
+        parseFloat(event.eventLongitude),
+        parseFloat(participantLocation.latitude),
+        parseFloat(participantLocation.longitude),
+        event.geofencingRadius
+      );
+      isOutsideVenue = !geofencingResult.isWithinRadius;
     }
 
     // Determine which time field to update based on attendance phase
     const updateData = {
+      attendanceTableId:
+        attendanceTable?.id || existingAttendance.attendanceTableId, // Link to attendance table
       participantLongitude: participantLocation
         ? participantLocation.longitude.toString()
         : existingAttendance.participantLongitude,
       participantLatitude: participantLocation
         ? participantLocation.latitude.toString()
         : existingAttendance.participantLatitude,
+      status:
+        isLateAttendance || isOutsideVenue
+          ? "Needs Validation"
+          : existingAttendance.status,
+      notes: isLateAttendance
+        ? `${attendancePhase.toUpperCase()} attendance recorded late - requires admin validation`
+        : isOutsideVenue
+        ? `${attendancePhase.toUpperCase()} attendance recorded outside venue - requires admin validation`
+        : existingAttendance.notes,
     };
 
     // Set the appropriate time field based on attendance phase
@@ -1122,21 +1485,121 @@ async function recordAttendancePhase(
       updateData
     );
 
+    // Calculate durations after updating attendance
+    const durations = calculateAttendanceDurations(updatedAttendance);
+    const durationSummary = generateDurationSummary(durations);
+
+    // Update the duration field in the database
+    await certORM.updateIndividualAttendance(existingAttendance.id, {
+      duration: durationSummary,
+    });
+
     console.log(
       `Successfully updated ${attendancePhase} attendance:`,
       updatedAttendance
     );
+    console.log(`📊 Duration calculated:`, durations);
 
     return {
       success: true,
-      message: `${attendancePhase.toUpperCase()} attendance recorded successfully`,
+      message: isLateAttendance
+        ? `${attendancePhase.toUpperCase()} attendance recorded late successfully! Your attendance requires admin validation.`
+        : isOutsideVenue
+        ? `${attendancePhase.toUpperCase()} attendance recorded outside venue successfully! Your attendance requires admin validation.`
+        : `${attendancePhase.toUpperCase()} attendance recorded successfully`,
       attendance: updatedAttendance,
       phase: attendancePhase,
+      isLate: isLateAttendance,
+      requiresValidation: isLateAttendance || isOutsideVenue,
+      durations: durations,
+      durationSummary: durationSummary,
     };
   } catch (error) {
     throw new Error(
       `Error recording ${attendancePhase} attendance: ${error.message}`
     );
+  }
+}
+
+// ==================== DURATION SERVICES ====================
+
+// Get detailed duration information for an attendance record
+async function getAttendanceDurations(attendanceId) {
+  try {
+    const attendance = await certORM.getAttendanceById(attendanceId);
+    if (!attendance) {
+      throw new Error("Attendance record not found");
+    }
+
+    const durations = calculateAttendanceDurations(attendance);
+    return {
+      success: true,
+      attendance: attendance,
+      durations: durations,
+      summary: generateDurationSummary(durations),
+    };
+  } catch (error) {
+    throw new Error(`Error getting attendance durations: ${error.message}`);
+  }
+}
+
+// Get duration statistics for an event
+async function getEventDurationStats(eventId) {
+  try {
+    const event = await certORM.getEventById(eventId);
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Get all attendance records for this event
+    const attendances = await certORM.getAttendanceByEventId(eventId);
+
+    const stats = {
+      totalParticipants: attendances.length,
+      participantsWithDuration: 0,
+      totalDuration: 0,
+      averageDuration: 0,
+      morningSessions: 0,
+      afternoonSessions: 0,
+      fullDaySessions: 0,
+      durationBreakdown: [],
+    };
+
+    attendances.forEach((attendance) => {
+      const durations = calculateAttendanceDurations(attendance);
+
+      if (durations.totalDuration > 0) {
+        stats.participantsWithDuration++;
+        stats.totalDuration += durations.totalDuration;
+
+        if (durations.morningDuration > 0) stats.morningSessions++;
+        if (durations.afternoonDuration > 0) stats.afternoonSessions++;
+        if (durations.morningDuration > 0 && durations.afternoonDuration > 0) {
+          stats.fullDaySessions++;
+        }
+
+        stats.durationBreakdown.push({
+          userId: attendance.userId,
+          userName: attendance.user?.fullName || "Unknown",
+          durations: durations,
+          summary: generateDurationSummary(durations),
+        });
+      }
+    });
+
+    if (stats.participantsWithDuration > 0) {
+      stats.averageDuration = Math.round(
+        stats.totalDuration / stats.participantsWithDuration
+      );
+    }
+
+    return {
+      success: true,
+      event: event,
+      stats: stats,
+    };
+  } catch (error) {
+    throw new Error(`Error getting event duration stats: ${error.message}`);
   }
 }
 
@@ -1507,6 +1970,10 @@ module.exports = {
   recordAttendanceFromQRScan,
   recordAttendancePhase,
 
+  // Duration services
+  getAttendanceDurations,
+  getEventDurationStats,
+
   // Validation services
   validateAttendanceRecord,
   rejectAttendanceRecord,
@@ -1537,6 +2004,7 @@ module.exports = {
 
   // Automatic Attendance Recording services
   recordAttendanceOnJoin,
+  recordAttendancePhase,
 
   // Certificate services
   generateCertificatesForEvent,

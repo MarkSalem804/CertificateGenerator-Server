@@ -1918,13 +1918,28 @@ certRouter.post(
   async (req, res) => {
     try {
       const { eventId, dayNumber, attendancePhase, qrData } = req.body;
-      const userId = req.user.userId;
+      const userId = req.user.id;
+
+      console.log(`🔍 [recordAttendancePhase route] Request data:`, {
+        eventId,
+        dayNumber,
+        attendancePhase,
+        userId,
+        user: req.user,
+      });
 
       if (!eventId || !dayNumber || !attendancePhase || !qrData) {
         return res.status(400).json({
           success: false,
           error:
             "Missing required fields: eventId, dayNumber, attendancePhase, qrData",
+        });
+      }
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          error: "User not authenticated. Please log in again.",
         });
       }
 
@@ -1941,16 +1956,8 @@ certRouter.post(
         });
       }
 
-      // Get user's location for attendance recording
-      let participantLocation = null;
-      try {
-        participantLocation = await requestLocationPermission();
-      } catch (locationError) {
-        console.log(
-          "Location permission denied or unavailable:",
-          locationError.message
-        );
-      }
+      // Get user's location from request body (passed from frontend)
+      const participantLocation = req.body.participantLocation || null;
 
       // Record the attendance phase
       const result = await certService.recordAttendancePhase(
@@ -2921,6 +2928,126 @@ certRouter.get(
       );
     } catch (error) {
       console.error(`❌ [downloadCertificate Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ==================== DURATION ROUTES ====================
+
+// Get attendance durations for a specific attendance record
+certRouter.get(
+  "/getAttendanceDurations/:attendanceId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { attendanceId } = req.params;
+      console.log(
+        `🔍 [getAttendanceDurations Route] Getting durations for attendance: ${attendanceId}`
+      );
+
+      if (!attendanceId || isNaN(attendanceId)) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid attendance ID is required",
+        });
+      }
+
+      const result = await certService.getAttendanceDurations(attendanceId);
+      console.log(`📊 [getAttendanceDurations Route] Duration data:`, result);
+
+      res.status(200).json({
+        success: true,
+        message: "Attendance durations fetched successfully",
+        data: result,
+      });
+    } catch (error) {
+      console.error(`❌ [getAttendanceDurations Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get duration statistics for an event
+certRouter.get(
+  "/getEventDurationStats/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      console.log(
+        `🔍 [getEventDurationStats Route] Getting duration stats for event: ${eventId}`
+      );
+
+      if (!eventId || isNaN(eventId)) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid event ID is required",
+        });
+      }
+
+      const result = await certService.getEventDurationStats(eventId);
+      console.log(`📊 [getEventDurationStats Route] Stats:`, result);
+
+      res.status(200).json({
+        success: true,
+        message: "Event duration statistics fetched successfully",
+        data: result,
+      });
+    } catch (error) {
+      console.error(`❌ [getEventDurationStats Route] Error:`, error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Record attendance phase (AM In, AM Out, PM In, PM Out)
+certRouter.post(
+  "/recordAttendancePhase",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId, dayNumber, attendancePhase, participantLocation } =
+        req.body;
+      const userId = req.user.id;
+
+      console.log(
+        `🔍 [recordAttendancePhase Route] Recording ${attendancePhase} for user ${userId}, event ${eventId}, day ${dayNumber}`
+      );
+
+      if (!eventId || !dayNumber || !attendancePhase) {
+        return res.status(400).json({
+          success: false,
+          error: "Event ID, day number, and attendance phase are required",
+        });
+      }
+
+      const result = await certService.recordAttendancePhase(
+        userId,
+        parseInt(eventId),
+        parseInt(dayNumber),
+        attendancePhase,
+        participantLocation
+      );
+
+      console.log(`📊 [recordAttendancePhase Route] Result:`, result);
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result,
+      });
+    } catch (error) {
+      console.error(`❌ [recordAttendancePhase Route] Error:`, error);
       res.status(400).json({
         success: false,
         error: error.message,

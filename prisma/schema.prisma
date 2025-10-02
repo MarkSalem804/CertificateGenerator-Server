@@ -94,7 +94,7 @@ model event {
   venue                String?                @db.Text
   maxAttendees         Int                    @default(50)
   currentAttendees     Int                    @default(0)
-  status               String                 @default("Draft") // Draft, Active, Completed, Cancelled
+  status               String                 @default("Active") // Active, Completed, Cancelled
   templateId           Int?
   templates            templates?             @relation(fields: [templateId], references: [id])
   duration             String?                @db.Text

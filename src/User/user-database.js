@@ -280,6 +280,32 @@ async function updateUserPassword(
   isPasswordChanged = true
 ) {
   try {
+    console.log(
+      `🔍 [updateUserPassword] Attempting to update password for userId:`,
+      userId,
+      `(parsed: ${parseInt(userId)})`
+    );
+
+    // Check if user exists first
+    const existingUser = await prisma.user.findUnique({
+      where: {
+        id: parseInt(userId),
+      },
+    });
+
+    if (!existingUser) {
+      console.error(
+        `❌ [updateUserPassword] User not found with id: ${userId}`
+      );
+      throw new Error(`User with id ${userId} not found`);
+    }
+
+    console.log(
+      `✅ [updateUserPassword] User found:`,
+      existingUser.fullName,
+      existingUser.email
+    );
+
     const updatedUser = await prisma.user.update({
       where: {
         id: parseInt(userId),

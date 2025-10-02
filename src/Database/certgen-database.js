@@ -559,6 +559,22 @@ async function updateEvent(eventId, updateData) {
   }
 }
 
+async function updateEventAttendeeCount(eventId, increment) {
+  try {
+    const updatedEvent = await prisma.event.update({
+      where: { id: parseInt(eventId) },
+      data: {
+        currentAttendees: {
+          increment: increment,
+        },
+      },
+    });
+    return updatedEvent;
+  } catch (error) {
+    throw new Error("Error updating event attendee count: " + error.message);
+  }
+}
+
 async function deleteEvent(eventId) {
   try {
     await prisma.event.delete({
@@ -860,6 +876,19 @@ async function getAttendanceById(attendanceId) {
 
 async function getAttendanceByUserAndDay(eventId, userId, dayNumber) {
   try {
+    // Validate parameters
+    if (!eventId || !userId || !dayNumber) {
+      throw new Error(
+        `Missing required parameters: eventId=${eventId}, userId=${userId}, dayNumber=${dayNumber}`
+      );
+    }
+
+    console.log(`🔍 [getAttendanceByUserAndDay] Searching for attendance:`, {
+      eventId: parseInt(eventId),
+      userId: parseInt(userId),
+      dayNumber: parseInt(dayNumber),
+    });
+
     const attendance = await prisma.attendance.findFirst({
       where: {
         eventId: parseInt(eventId),
@@ -1932,7 +1961,28 @@ async function getUserEventParticipations(userId) {
       },
     });
 
-    return participations;
+    // For each participation, fetch the user's attendance records for that specific event
+    const formattedParticipations = await Promise.all(
+      participations.map(async (p) => {
+        // Fetch attendance records for this user and event
+        const attendanceRecords = await prisma.attendance.findMany({
+          where: {
+            userId: userId,
+            eventId: p.eventId,
+          },
+          orderBy: {
+            dayNumber: "asc",
+          },
+        });
+
+        return {
+          ...p,
+          attendance: attendanceRecords,
+        };
+      })
+    );
+
+    return formattedParticipations;
   } catch (error) {
     throw new Error(
       `Error getting user event participations: ${error.message}`
@@ -2675,6 +2725,7 @@ module.exports = {
   updateEvent,
   deleteEvent,
   updateEventStatus,
+  updateEventAttendeeCount,
 
   // Attendance functions
   addAttendanceTable,
