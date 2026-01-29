@@ -14,7 +14,9 @@ const broadcastEventCreated = (io, eventData) => {
       data: eventData,
       timestamp: new Date().toISOString(),
     });
-    console.log(`📢 Broadcasted event creation: ${eventData.title}`);
+    console.log(
+      `📢 Broadcasted event creation: ${eventData?.name || "Unknown Event"}`
+    );
   } catch (error) {
     console.error("Error broadcasting event creation:", error);
   }

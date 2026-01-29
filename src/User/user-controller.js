@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const userRouter = express.Router();
 const userService = require("./user-services");
 const { validateRegistration } = require("../Middlewares/validation");
+const { authenticateToken } = require("../Middlewares/auth");
 const {
   broadcastNotification,
   broadcastEventCreated,
@@ -70,6 +71,7 @@ userRouter.post("/login", async (req, res) => {
         email: user.email,
         role: user.sessionRole || user.role, // Use session role if available
         originalRole: user.originalRole || user.role, // Store original role for reference
+        schoolName: user.schoolName, // Include school name for filtering
       },
       JWT_SECRET,
       { expiresIn: "4h" } // Access token expires in 4 hours
@@ -243,11 +245,27 @@ userRouter.post("/logout", async (req, res) => {
   }
 });
 
-userRouter.get("/getAllUsers", async (req, res) => {
+userRouter.get("/getAllUsers", authenticateToken, async (req, res) => {
   try {
-    const result = await userService.getAllUsers();
+    // Get user info from authenticated request
+    const userRole = req.user.role;
+    const userSchoolName = req.user.schoolName;
+
+    console.log("🔍 [getAllUsers] User info:", {
+      id: req.user.id,
+      email: req.user.email,
+      role: userRole,
+      schoolName: userSchoolName,
+    });
+
+    const result = await userService.getAllUsers(userRole, userSchoolName);
+    console.log(
+      `📊 [getAllUsers] Returning ${result.length} users for ${userRole} from school: ${userSchoolName}`
+    );
+
     res.status(200).json(result);
   } catch (error) {
+    console.error("❌ [getAllUsers] Error:", error);
     res.status(400).json({
       success: false,
       error: error.message,

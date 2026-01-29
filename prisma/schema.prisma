@@ -21,6 +21,9 @@ enum UserRole {
   unit_section_head
   supervisor
   school_head
+  technical_working_group
+  guest_speaker
+  guest_of_honor
 }
 
 model user {
@@ -38,6 +41,7 @@ model user {
   schoolId            Int?
   schoolName          String?              @db.Text
   school              school?              @relation(fields: [schoolId], references: [id])
+  category            String?              @db.Text //Teaching Related, Teaching Personnel, Non-Teaching Personnel
   isPasswordChanged   Boolean?             @default(false)
   lastLogin           DateTime?
   refreshToken        String?              @db.Text
@@ -51,6 +55,7 @@ model user {
   mealAttendance      mealAttendance[]
   issuedCertificates  certificate[]        @relation("CertificateIssuer")
   eventParticipations eventParticipation[]
+  eventRegistrations  eventRegistration[]
 }
 
 model school {
@@ -101,9 +106,19 @@ model event {
   numberOfDays         Int                    @default(1)
   startTime            String?                @db.Text
   endTime              String?                @db.Text
+  attendanceTimeOption String                 @default("government") @db.VarChar(50) // "government" or "custom"
+  customTimeSchedule   String?                @db.VarChar(20) // "morning", "afternoon", "whole_day"
+  amInStartTime        String?                @db.VarChar(10) // AM IN start time (e.g., "07:00")
+  amInEndTime          String?                @db.VarChar(10) // AM IN end time (e.g., "09:00")
+  amOutStartTime       String?                @db.VarChar(10) // AM OUT start time (e.g., "12:00")
+  amOutEndTime         String?                @db.VarChar(10) // AM OUT end time (e.g., "13:00")
+  pmInStartTime        String?                @db.VarChar(10) // PM IN start time (e.g., "13:00")
+  pmInEndTime          String?                @db.VarChar(10) // PM IN end time (e.g., "14:00")
+  pmOutStartTime       String?                @db.VarChar(10) // PM OUT start time (e.g., "17:00")
+  pmOutEndTime         String?                @db.VarChar(10) // PM OUT end time (e.g., "18:00")
   eventLongitude       String?                @db.Text // for geofencing - location of the venue
   eventLatitude        String?                @db.Text // for geofencing - location of the venue
-  geofencingRadius     Int                    @default(50) // geofencing radius in meters (default: 50m)
+  geofencingRadius     Int                    @default(1000) // geofencing radius in meters (default: 1000m = 1km)
   createdBy            Int? // User who created the event
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
@@ -114,29 +129,39 @@ model event {
   pdProgram            pdPrograms?            @relation(fields: [pdProgramId], references: [id])
   totalApprovedBudget  Int?
   cpdUnits             Boolean?               @default(false)
-  cpdUnitsCount        Int?                   @default(0)
+  cpdUnitsCount        Float?                 @default(0)
+  prcNumber            String?                @db.Text // PRC accreditation number of the event
+  eventDates           String?                @db.Text // JSON string of event dates for multi-day events
   certificates         certificate[]
   attendance           attendance[]
   mealAttendance       mealAttendance[]
   attendanceTables     attendanceTables[]
   mealAttendanceTables mealAttendanceTables[]
   eventParticipations  eventParticipation[]
+  eventRegistrations   eventRegistration[]
 }
 
 model certificate {
   id                Int        @id @unique @default(autoincrement())
   certificateNumber String     @unique @db.VarChar(255)
-  userId            Int        @unique // User who received the certificate
+  eventRole         String?
+  certType          String? // Appearance, Participation, Recognition
+  userId            Int // User who received the certificate (removed @unique to allow multiple certificates per user)
   eventId           Int
   issuedBy          Int // User who issued the certificate
   issuedAt          DateTime   @default(now())
   templateId        Int?
+  duration          String?    @db.Text
   template          templates? @relation(fields: [templateId], references: [id], onDelete: Cascade)
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
   user              user       @relation(fields: [userId], references: [id], onDelete: Cascade)
   event             event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
   issuer            user       @relation("CertificateIssuer", fields: [issuedBy], references: [id])
+  certStatus        String     @default("Not Signed")
+
+  // Only allow one certificate per user per event
+  @@unique([userId, eventId], name: "unique_user_event_certificate")
 }
 
 model attendance {
@@ -247,4 +272,20 @@ model eventParticipation {
   event event @relation(fields: [eventId], references: [id])
 
   @@unique([userId, eventId]) // Prevent duplicate participations
+}
+
+model eventRegistration {
+  id           Int      @id @unique @default(autoincrement())
+  userId       Int
+  eventId      Int
+  registeredAt DateTime @default(now())
+  status       String   @default("registered") // registered, cancelled
+  notes        String?  @db.Text // Optional notes from user during registration
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user  user  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId]) // Prevent duplicate registrations
 }

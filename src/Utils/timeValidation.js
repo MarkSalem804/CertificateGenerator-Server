@@ -3,6 +3,47 @@
  */
 
 /**
+ * Parse event time string to extract hour and minute
+ * @param {string} timeString - Time string (e.g., "14:00", "2:00 PM", "14:00:00")
+ * @returns {Object|null} - Object with hour and minute, or null if invalid
+ */
+function parseEventTime(timeString) {
+  if (!timeString) return null;
+
+  // Handle formats like "14:00", "2:00 PM", "14:00:00"
+  const time = timeString.toString();
+
+  if (time.includes(":")) {
+    const parts = time.split(":");
+    let hour = parseInt(parts[0]);
+    const minute = parseInt(parts[1]);
+
+    // Handle 24-hour format
+    if (hour >= 0 && hour <= 23) {
+      return { hour, minute };
+    }
+  }
+
+  // Handle 12-hour format
+  const match = time.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (match) {
+    let hour = parseInt(match[1]);
+    const minute = parseInt(match[2]);
+    const period = match[3].toUpperCase();
+
+    if (period === "PM" && hour !== 12) {
+      hour += 12;
+    } else if (period === "AM" && hour === 12) {
+      hour = 0;
+    }
+
+    return { hour, minute };
+  }
+
+  return null;
+}
+
+/**
  * Check if the current time is within the event's daily time range
  * @param {Date} eventDate - The base event date
  * @param {number} dayNumber - The day number (1, 2, 3, etc.)
@@ -215,6 +256,7 @@ function formatTime(timeString) {
 }
 
 module.exports = {
+  parseEventTime,
   isWithinEventTimeRange,
   isEventEnded,
   isDayPassed,

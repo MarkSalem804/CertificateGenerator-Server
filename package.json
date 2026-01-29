@@ -21,7 +21,8 @@
   },
   "homepage": "https://github.com/MarkSalem804/CertificateGenerator-Server#readme",
   "dependencies": {
-    "@prisma/client": "^6.15.0",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "@prisma/client": "6.15.0",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
     "bwip-js": "^4.7.0",
@@ -37,6 +38,8 @@
     "jsonwebtoken": "^9.0.2",
     "luxon": "^3.7.2",
     "multer": "^2.0.2",
+    "node-forge": "^1.3.3",
+    "node-signpdf": "^3.0.0",
     "nodemailer": "^7.0.6",
     "nodemon": "^3.1.10",
     "path": "^0.12.7",
@@ -44,5 +47,8 @@
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.15.0"
   }
 }

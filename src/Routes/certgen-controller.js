@@ -320,7 +320,8 @@ certRouter.post("/addEvent", authenticateToken, async (req, res) => {
     // Validate cpdUnitsCount if provided
     if (
       eventData.cpdUnitsCount &&
-      (isNaN(parseInt(eventData.cpdUnitsCount)) || eventData.cpdUnitsCount < 0)
+      (isNaN(parseFloat(eventData.cpdUnitsCount)) ||
+        eventData.cpdUnitsCount < 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -333,12 +334,45 @@ certRouter.post("/addEvent", authenticateToken, async (req, res) => {
 
     const newEvent = await certService.addEvent(eventData);
 
+    // Automatically create attendance and meal attendance tables based on numberOfDays
+    const numberOfDays = eventData.numberOfDays || 1;
+    const attendanceTablePromises = [];
+    const mealAttendanceTablePromises = [];
+
+    for (let day = 1; day <= numberOfDays; day++) {
+      // Create attendance table for each day
+      attendanceTablePromises.push(
+        certService.addAttendanceTable({
+          eventId: newEvent.id,
+          dayNumber: day,
+        })
+      );
+
+      // Create meal attendance table for each day
+      mealAttendanceTablePromises.push(
+        certService.addMealAttendanceTable({
+          eventId: newEvent.id,
+          dayNumber: day,
+        })
+      );
+    }
+
+    // Create all attendance and meal attendance tables
+    await Promise.all([
+      ...attendanceTablePromises,
+      ...mealAttendanceTablePromises,
+    ]);
+
+    console.log(
+      `✅ [addEvent] Created ${numberOfDays} attendance table(s) and ${numberOfDays} meal attendance table(s) for event ${newEvent.id}`
+    );
+
     // Broadcast event creation to all connected clients (HTTP and HTTPS)
     broadcastEventCreatedBoth(req, newEvent);
 
     res.status(201).json({
       success: true,
-      message: "Event created successfully",
+      message: `Event created successfully with ${numberOfDays} attendance and meal table(s) auto-generated`,
       event: newEvent,
     });
   } catch (error) {
@@ -352,7 +386,16 @@ certRouter.post("/addEvent", authenticateToken, async (req, res) => {
 // Get All Events
 certRouter.get("/getAllEvents", authenticateToken, async (req, res) => {
   try {
-    const events = await certService.getAllEvents();
+    // Get user info from authenticated request
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const userSchoolName = req.user.schoolName;
+
+    const events = await certService.getAllEvents(
+      userId,
+      userRole,
+      userSchoolName
+    );
     res.status(200).json({
       success: true,
       message: "Events fetched successfully",
@@ -448,7 +491,7 @@ certRouter.put("/updateEvent/:id", async (req, res) => {
     // Validate cpdUnitsCount if provided
     if (
       updateData.cpdUnitsCount &&
-      (isNaN(parseInt(updateData.cpdUnitsCount)) ||
+      (isNaN(parseFloat(updateData.cpdUnitsCount)) ||
         updateData.cpdUnitsCount < 0)
     ) {
       return res.status(400).json({
@@ -531,6 +574,385 @@ certRouter.patch("/updateEventStatus/:id", async (req, res) => {
     });
   }
 });
+
+// ==================== EVENT REGISTRATION ROUTES ====================
+
+// Register for Event
+certRouter.post(
+  "/registerForEvent/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const { notes } = req.body;
+      const userId = req.user.id;
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      // Check if event exists
+      const event = await certService.getEventById(eventIdInt);
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          error: "Event not found",
+        });
+      }
+
+      // Check if user is already registered
+      const existingRegistration = await prisma.eventRegistration.findUnique({
+        where: {
+          userId_eventId: {
+            userId: userId,
+            eventId: eventIdInt,
+          },
+        },
+      });
+
+      if (existingRegistration) {
+        if (existingRegistration.status === "registered") {
+          return res.status(400).json({
+            success: false,
+            error: "You are already registered for this event",
+          });
+        } else if (existingRegistration.status === "cancelled") {
+          // Update existing cancelled registration to registered
+          const updatedRegistration = await prisma.eventRegistration.update({
+            where: {
+              userId_eventId: {
+                userId: userId,
+                eventId: eventIdInt,
+              },
+            },
+            data: {
+              status: "registered",
+              registeredAt: new Date(),
+              notes: notes || null,
+            },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  email: true,
+                },
+              },
+              event: {
+                select: {
+                  id: true,
+                  name: true,
+                  date: true,
+                  location: true,
+                },
+              },
+            },
+          });
+
+          return res.status(200).json({
+            success: true,
+            message: "Successfully re-registered for the event",
+            registration: updatedRegistration,
+          });
+        }
+      }
+
+      // Create new registration
+      const newRegistration = await prisma.eventRegistration.create({
+        data: {
+          userId: userId,
+          eventId: eventIdInt,
+          notes: notes || null,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+          event: {
+            select: {
+              id: true,
+              name: true,
+              date: true,
+              location: true,
+            },
+          },
+        },
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Successfully registered for the event",
+        registration: newRegistration,
+      });
+    } catch (error) {
+      console.error("registerForEvent error:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Cancel Event Registration
+certRouter.delete(
+  "/cancelEventRegistration/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const userId = req.user.id;
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      // Check if registration exists
+      const existingRegistration = await prisma.eventRegistration.findUnique({
+        where: {
+          userId_eventId: {
+            userId: userId,
+            eventId: eventIdInt,
+          },
+        },
+      });
+
+      if (!existingRegistration) {
+        return res.status(404).json({
+          success: false,
+          error: "Registration not found",
+        });
+      }
+
+      if (existingRegistration.status === "cancelled") {
+        return res.status(400).json({
+          success: false,
+          error: "Registration is already cancelled",
+        });
+      }
+
+      // Update registration status to cancelled
+      const updatedRegistration = await prisma.eventRegistration.update({
+        where: {
+          userId_eventId: {
+            userId: userId,
+            eventId: eventIdInt,
+          },
+        },
+        data: {
+          status: "cancelled",
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+          event: {
+            select: {
+              id: true,
+              name: true,
+              date: true,
+              location: true,
+            },
+          },
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Event registration cancelled successfully",
+        registration: updatedRegistration,
+      });
+    } catch (error) {
+      console.error("cancelEventRegistration error:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get User's Event Registration Status
+certRouter.get(
+  "/getEventRegistrationStatus/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const userId = req.user.id;
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      const registration = await prisma.eventRegistration.findUnique({
+        where: {
+          userId_eventId: {
+            userId: userId,
+            eventId: eventIdInt,
+          },
+        },
+        include: {
+          event: {
+            select: {
+              id: true,
+              name: true,
+              date: true,
+              location: true,
+            },
+          },
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Registration status fetched successfully",
+        registration: registration,
+        isRegistered: registration
+          ? registration.status === "registered"
+          : false,
+      });
+    } catch (error) {
+      console.error("getEventRegistrationStatus error:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get All Event Registrations for an Event (Admin only)
+certRouter.get(
+  "/getEventRegistrations/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      // Check if user is admin
+      if (req.user.role !== "administrator") {
+        return res.status(403).json({
+          success: false,
+          error: "Access denied. Administrator role required",
+        });
+      }
+
+      const registrations = await prisma.eventRegistration.findMany({
+        where: {
+          eventId: eventIdInt,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              role: true,
+              designationName: true,
+              unitName: true,
+              schoolName: true,
+            },
+          },
+          event: {
+            select: {
+              id: true,
+              name: true,
+              date: true,
+              location: true,
+            },
+          },
+        },
+        orderBy: {
+          registeredAt: "desc",
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Event registrations fetched successfully",
+        registrations: registrations,
+      });
+    } catch (error) {
+      console.error("getEventRegistrations error:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get User's All Event Registrations
+certRouter.get(
+  "/getUserEventRegistrations",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+
+      const registrations = await prisma.eventRegistration.findMany({
+        where: {
+          userId: userId,
+        },
+        include: {
+          event: {
+            select: {
+              id: true,
+              name: true,
+              date: true,
+              location: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: {
+          registeredAt: "desc",
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "User event registrations fetched successfully",
+        registrations: registrations,
+      });
+    } catch (error) {
+      console.error("getUserEventRegistrations error:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
 
 // ==================== TEMPLATES ROUTES ====================
 
@@ -1956,6 +2378,24 @@ certRouter.post(
         });
       }
 
+      // Get event details to check if user is the creator
+      const event = await certService.getEventById(eventId);
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          error: "Event not found",
+        });
+      }
+
+      // Prevent event creators from recording attendance on their own events
+      if (event.createdBy === userId) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "Event creators cannot record attendance on their own events. You can only monitor this event.",
+        });
+      }
+
       // Get user's location from request body (passed from frontend)
       const participantLocation = req.body.participantLocation || null;
 
@@ -2001,6 +2441,15 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
       });
     }
 
+    // Prevent event creators from joining their own events
+    if (event.createdBy === userId) {
+      return res.status(403).json({
+        success: false,
+        error:
+          "Event creators cannot join their own events. You can only monitor this event.",
+      });
+    }
+
     // Check if event has completely ended (past the last day)
     const { isEventEnded, canJoinEvent } = require("../Utils/timeValidation");
     if (isEventEnded(event.date, event.numberOfDays, event.endTime)) {
@@ -2026,10 +2475,96 @@ certRouter.post("/joinEvent/:eventId", authenticateToken, async (req, res) => {
     // Automatically record attendance on join
     let attendanceResult = null;
     try {
+      // Determine correct attendance phase based on current time and event start time
+      // Use local time (Philippines timezone) for phase detection
+      const currentTime = new Date();
+      const philippinesTime = new Date(
+        currentTime.toLocaleString("en-US", { timeZone: "Asia/Manila" })
+      );
+      const currentHour = philippinesTime.getHours();
+      const currentMinute = philippinesTime.getMinutes();
+      const currentTimeInMinutes = currentHour * 60 + currentMinute;
+
+      // Parse event times
+      const { parseEventTime } = require("../Utils/timeValidation");
+      const eventStartTime = parseEventTime(event.startTime);
+      let eventStartMinutes = null;
+      if (eventStartTime) {
+        eventStartMinutes = eventStartTime.hour * 60 + eventStartTime.minute;
+      }
+
+      // Parse PM time ranges from event
+      const pmInStartTime = parseEventTime(event.pmInStartTime || "13:00");
+      const pmInEndTime = parseEventTime(event.pmInEndTime || "13:30");
+      const pmOutStartTime = parseEventTime(event.pmOutStartTime || "17:00");
+      const pmOutEndTime = parseEventTime(event.pmOutEndTime || "18:00");
+
+      // Convert to minutes for comparison
+      const pmInStartMinutes = pmInStartTime
+        ? pmInStartTime.hour * 60 + pmInStartTime.minute
+        : 13 * 60;
+      const pmInEndMinutes = pmInEndTime
+        ? pmInEndTime.hour * 60 + pmInEndTime.minute
+        : 13 * 60 + 30;
+      const pmOutStartMinutes = pmOutStartTime
+        ? pmOutStartTime.hour * 60 + pmOutStartTime.minute
+        : 17 * 60;
+      const pmOutEndMinutes = pmOutEndTime
+        ? pmOutEndTime.hour * 60 + pmOutEndTime.minute
+        : 18 * 60;
+
+      // Determine phase based on current time and event-specific time ranges
+      let attendancePhase = "am_in"; // Default fallback
+
+      // Check if current time is within PM IN range
+      if (
+        currentTimeInMinutes >= pmInStartMinutes &&
+        currentTimeInMinutes <= pmInEndMinutes
+      ) {
+        attendancePhase = "pm_in";
+      }
+      // Check if current time is within PM OUT range (universal 5:00 PM - 6:00 PM)
+      else if (
+        currentTimeInMinutes >= 17 * 60 && // 5:00 PM
+        currentTimeInMinutes <= 18 * 60 // 6:00 PM
+      ) {
+        attendancePhase = "pm_out";
+      }
+      // Check if current time is in morning (before PM IN start time)
+      else if (currentTimeInMinutes < pmInStartMinutes) {
+        // Check if it's AM OUT time (12:00 PM - 12:59 PM)
+        if (
+          currentTimeInMinutes >= 12 * 60 &&
+          currentTimeInMinutes <= 12 * 60 + 59
+        ) {
+          attendancePhase = "am_out";
+        } else {
+          attendancePhase = "am_in";
+        }
+      }
+      // After PM OUT end time - default to am_in for next day
+      else {
+        attendancePhase = "am_in";
+      }
+
+      console.log(
+        `🔍 [Join Event] Current time (Philippines): ${philippinesTime.toLocaleTimeString()}, Phase: ${attendancePhase}`
+      );
+      console.log(`🔍 [Join Event] Time debugging:`, {
+        currentTimeInMinutes,
+        pmOutStartMinutes: 17 * 60, // 5:00 PM (universal)
+        pmOutEndMinutes: 18 * 60, // 6:00 PM (universal)
+        pmOutStartTime: "17:00 (universal)",
+        pmOutEndTime: "18:00 (universal)",
+        isWithinPMOutRange:
+          currentTimeInMinutes >= 17 * 60 && currentTimeInMinutes <= 18 * 60,
+      });
+
       attendanceResult = await certService.recordAttendanceOnJoin(
         userId,
         parseInt(eventId),
-        participantLocation
+        participantLocation,
+        attendancePhase
       );
     } catch (attendanceError) {
       // Log attendance error but don't fail the join
@@ -2363,6 +2898,260 @@ certRouter.get(
   }
 );
 
+// ==================== DEDICATED ATTENDANCE PHASE ENDPOINTS ====================
+
+// AM IN Attendance
+certRouter.post("/attendance/am-in", authenticateToken, async (req, res) => {
+  try {
+    const { eventId, dayNumber = 1, participantLocation } = req.body;
+    const userId = req.user.id;
+
+    console.log(
+      `🎯 [AM IN] User ${userId} recording AM IN for event ${eventId}, day ${dayNumber}`
+    );
+
+    // Check if user already has attendance record for this day
+    const existingAttendance = await certService.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+
+    let result;
+    if (existingAttendance) {
+      // Update existing record with AM IN time
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "am_in",
+        participantLocation
+      );
+    } else {
+      // Create new record with AM IN time
+      result = await certService.recordAttendanceOnJoin(
+        userId,
+        eventId,
+        participantLocation,
+        "am_in"
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "AM IN attendance recorded successfully",
+      attendance: result,
+    });
+  } catch (error) {
+    console.error("Error recording AM IN attendance:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to record AM IN attendance",
+    });
+  }
+});
+
+// AM OUT Attendance
+certRouter.post("/attendance/am-out", authenticateToken, async (req, res) => {
+  try {
+    const { eventId, dayNumber = 1, participantLocation } = req.body;
+    const userId = req.user.id;
+
+    console.log(
+      `🎯 [AM OUT] User ${userId} recording AM OUT for event ${eventId}, day ${dayNumber}`
+    );
+
+    // Check if user already has attendance record for this day
+    const existingAttendance = await certService.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+
+    console.log(`🔍 [AM OUT] Existing attendance check:`, {
+      eventId,
+      userId,
+      dayNumber,
+      existingAttendance: existingAttendance ? "FOUND" : "NOT FOUND",
+    });
+
+    let result;
+    if (existingAttendance) {
+      // Update existing record with AM OUT time
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "am_out",
+        participantLocation
+      );
+    } else {
+      // Create new attendance record for this day (Day 2, 3, etc.)
+      // Use recordAttendancePhase with a special flag to create new record
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "am_out",
+        participantLocation,
+        true // createIfNotExists flag
+      );
+    }
+
+    console.log(`✅ [AM OUT] Attendance recorded successfully:`, {
+      userId,
+      eventId,
+      dayNumber,
+      result,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "AM OUT attendance recorded successfully",
+      attendance: result,
+    });
+  } catch (error) {
+    console.error("Error recording AM OUT attendance:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to record AM OUT attendance",
+    });
+  }
+});
+
+// PM IN Attendance
+certRouter.post("/attendance/pm-in", authenticateToken, async (req, res) => {
+  try {
+    const { eventId, dayNumber = 1, participantLocation } = req.body;
+    const userId = req.user.id;
+
+    console.log(
+      `🎯 [PM IN] User ${userId} recording PM IN for event ${eventId}, day ${dayNumber}`
+    );
+
+    // Check if user already has attendance record for this day
+    const existingAttendance = await certService.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+
+    console.log(`🔍 [PM IN] Existing attendance check:`, {
+      eventId,
+      userId,
+      dayNumber,
+      existingAttendance: existingAttendance ? "FOUND" : "NOT FOUND",
+    });
+
+    let result;
+    if (existingAttendance) {
+      // Update existing record with PM IN time
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "pm_in",
+        participantLocation
+      );
+    } else {
+      // Create new record with PM IN time
+      result = await certService.recordAttendanceOnJoin(
+        userId,
+        eventId,
+        participantLocation,
+        "pm_in"
+      );
+    }
+
+    console.log(`✅ [PM IN] Attendance recorded successfully:`, {
+      userId,
+      eventId,
+      dayNumber,
+      result,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "PM IN attendance recorded successfully",
+      attendance: result,
+    });
+  } catch (error) {
+    console.error("Error recording PM IN attendance:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to record PM IN attendance",
+    });
+  }
+});
+
+// PM OUT Attendance
+certRouter.post("/attendance/pm-out", authenticateToken, async (req, res) => {
+  try {
+    const { eventId, dayNumber = 1, participantLocation } = req.body;
+    const userId = req.user.id;
+
+    console.log(
+      `🎯 [PM OUT] User ${userId} recording PM OUT for event ${eventId}, day ${dayNumber}`
+    );
+
+    // Check if user already has attendance record for this day
+    const existingAttendance = await certService.getAttendanceByUserAndDay(
+      eventId,
+      userId,
+      dayNumber
+    );
+
+    console.log(`🔍 [PM OUT] Existing attendance check:`, {
+      eventId,
+      userId,
+      dayNumber,
+      existingAttendance: existingAttendance ? "FOUND" : "NOT FOUND",
+    });
+
+    let result;
+    if (existingAttendance) {
+      // Update existing record with PM OUT time
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "pm_out",
+        participantLocation
+      );
+    } else {
+      // Create new attendance record for this day (Day 2, 3, etc.)
+      // Use recordAttendancePhase with a special flag to create new record
+      result = await certService.recordAttendancePhase(
+        userId,
+        eventId,
+        dayNumber,
+        "pm_out",
+        participantLocation,
+        true // createIfNotExists flag
+      );
+    }
+
+    console.log(`✅ [PM OUT] Attendance recorded successfully:`, {
+      userId,
+      eventId,
+      dayNumber,
+      result,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "PM OUT attendance recorded successfully",
+      attendance: result,
+    });
+  } catch (error) {
+    console.error("Error recording PM OUT attendance:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to record PM OUT attendance",
+    });
+  }
+});
+
 // Join Event with QR Code
 certRouter.post(
   "/joinEventWithQRCode/:eventId",
@@ -2386,6 +3175,15 @@ certRouter.post(
         return res.status(404).json({
           success: false,
           error: "Event not found",
+        });
+      }
+
+      // Prevent event creators from joining their own events
+      if (event.createdBy === userId) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "Event creators cannot join their own events. You can only monitor this event.",
         });
       }
 
@@ -2451,9 +3249,6 @@ certRouter.post(
   }
 );
 
-// ==================== QR CODE ATTENDANCE SCANNING ROUTES ====================
-
-// Scan QR Code for Attendance Recording
 certRouter.post("/scanAttendanceQR", authenticateToken, async (req, res) => {
   try {
     const { qrData, participantLocation } = req.body;
@@ -2466,14 +3261,10 @@ certRouter.post("/scanAttendanceQR", authenticateToken, async (req, res) => {
       });
     }
 
-    // Parse QR data to extract event and day information
-    let eventId, dayNumber, scanType;
-
+    // Parse QR data to determine which dedicated endpoint to call
+    let parsedData;
     try {
-      const parsedData = JSON.parse(qrData);
-      eventId = parsedData.eventId;
-      dayNumber = parsedData.dayNumber;
-      scanType = parsedData.scanType || "am_in"; // Default to AM In for first scan
+      parsedData = JSON.parse(qrData);
     } catch (parseError) {
       return res.status(400).json({
         success: false,
@@ -2481,99 +3272,51 @@ certRouter.post("/scanAttendanceQR", authenticateToken, async (req, res) => {
       });
     }
 
-    if (!eventId || !dayNumber) {
+    const { eventId, dayNumber = 1 } = parsedData;
+
+    if (!eventId) {
       return res.status(400).json({
         success: false,
-        error: "QR code missing required event or day information",
+        error: "QR code missing event information",
       });
     }
 
-    // Get event details for validation
-    const event = await certService.getEventById(eventId);
-    if (!event) {
-      return res.status(404).json({
-        success: false,
-        error: "Event not found",
-      });
-    }
-
-    // Check if the day has passed or if we're outside the allowed time range
-    const {
-      isDayPassed,
-      isWithinEventTimeRange,
-    } = require("../Utils/timeValidation");
-
-    if (isDayPassed(event.date, dayNumber, event.endTime)) {
-      return res.status(400).json({
-        success: false,
-        error: `Day ${dayNumber} has already ended. Attendance cannot be recorded for past days.`,
-      });
-    }
-
-    if (
-      !isWithinEventTimeRange(
-        event.date,
-        dayNumber,
-        event.startTime,
-        event.endTime
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: `Attendance can only be recorded during event hours (${
-          event.startTime || "8:00 AM"
-        } - ${event.endTime || "5:00 PM"}) for Day ${dayNumber}.`,
-      });
-    }
-
-    // Determine if this is a first-time join or subsequent scan
-    const existingAttendance = await certService.getAttendanceByUserAndDay(
-      eventId,
-      userId,
-      dayNumber
-    );
-
-    let result;
-    if (!existingAttendance) {
-      // First time joining - record AM In
-      result = await certService.recordAttendanceOnJoin(
-        userId,
-        eventId,
-        participantLocation
-      );
+    // Determine which dedicated endpoint to call based on QR type
+    let endpoint;
+    if (parsedData.type === "attendance_am_in") {
+      endpoint = "/attendance/am-in";
+    } else if (parsedData.type === "attendance_am_out") {
+      endpoint = "/attendance/am-out";
+    } else if (parsedData.type === "attendance_pm_in") {
+      endpoint = "/attendance/pm-in";
+    } else if (parsedData.type === "attendance_pm_out") {
+      endpoint = "/attendance/pm-out";
     } else {
-      // Subsequent scan - determine scan type based on existing data
-      let nextScanType = "am_out";
-      if (existingAttendance.amOutTime && !existingAttendance.pmInTime) {
-        nextScanType = "pm_in";
-      } else if (existingAttendance.pmInTime && !existingAttendance.pmOutTime) {
-        nextScanType = "pm_out";
-      } else if (existingAttendance.pmOutTime) {
-        return res.status(400).json({
-          success: false,
-          error: "All attendance times have already been recorded for this day",
-        });
-      }
-
-      result = await certService.recordAttendanceFromQRScan(
-        userId,
-        eventId,
-        dayNumber,
-        nextScanType,
-        participantLocation
-      );
+      // Default to AM IN for legacy QR codes
+      endpoint = "/attendance/am-in";
     }
 
-    res.status(200).json({
-      success: true,
-      message: result.message,
-      attendance: result.attendance,
-      geofencing: result.geofencing,
+    // Call the appropriate dedicated endpoint
+    const response = await fetch(`https://sdoic-certigo.depedimuscity.com:5017${endpoint}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: req.headers.authorization,
+      },
+      body: JSON.stringify({
+        eventId,
+        dayNumber,
+        participantLocation,
+      }),
     });
+
+    const result = await response.json();
+    res.status(response.status).json(result);
   } catch (error) {
-    res.status(400).json({
+    console.error("Error in legacy scanAttendanceQR:", error);
+    res.status(500).json({
       success: false,
-      error: error.message,
+      error: "Internal server error",
     });
   }
 });
@@ -2711,39 +3454,208 @@ certRouter.put(
 
 // ==================== CERTIFICATE ROUTES ====================
 
-// Generate certificates for an event
-certRouter.post(
-  "/generateCertificates/:eventId",
+// Get All Certificates
+certRouter.get("/getAllCertificates", authenticateToken, async (req, res) => {
+  try {
+    const certificates = await certService.getAllCertificates();
+    res.status(200).json({
+      success: true,
+      message: "Certificates fetched successfully",
+      certificates: certificates,
+    });
+  } catch (error) {
+    console.error("Error fetching certificates:", error);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get User Certificates (for participants to see only their own certificates)
+certRouter.get("/getUserCertificates", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const certificates = await certService.getUserCertificates(userId);
+    res.status(200).json({
+      success: true,
+      message: "User certificates fetched successfully",
+      certificates: certificates,
+    });
+  } catch (error) {
+    console.error("Error fetching user certificates:", error);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get certificates for proponent's events
+certRouter.get(
+  "/getProponentCertificates",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const proponentId = req.user.id;
+      const certificates = await certService.getCertificatesByProponent(
+        proponentId
+      );
+      res.status(200).json({
+        success: true,
+        message: "Proponent certificates fetched successfully",
+        certificates: certificates,
+      });
+    } catch (error) {
+      console.error("Error fetching proponent certificates:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get certificates by school (for school heads)
+certRouter.get(
+  "/getSchoolCertificates",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const schoolName = req.user.schoolName;
+      const certificates = await certService.getCertificatesBySchool(
+        schoolName
+      );
+      res.status(200).json({
+        success: true,
+        message: "School certificates fetched successfully",
+        certificates: certificates,
+      });
+    } catch (error) {
+      console.error("Error fetching school certificates:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get Certificate by ID
+certRouter.get("/getCertificate/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const certificateId = parseInt(id, 10);
+
+    if (isNaN(certificateId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid certificate ID provided",
+      });
+    }
+
+    const certificate = await certService.getCertificateById(certificateId);
+    res.status(200).json({
+      success: true,
+      message: "Certificate fetched successfully",
+      certificate: certificate,
+    });
+  } catch (error) {
+    console.error("Error fetching certificate:", error);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get Certificates by Event
+certRouter.get(
+  "/getCertificatesByEvent/:eventId",
   authenticateToken,
   async (req, res) => {
     try {
       const { eventId } = req.params;
-      const issuedBy = req.user.id; // Get from authenticated user
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      const certificates = await certService.getCertificatesByEvent(eventIdInt);
+      res.status(200).json({
+        success: true,
+        message: "Event certificates fetched successfully",
+        certificates: certificates,
+      });
+    } catch (error) {
+      console.error("Error fetching event certificates:", error);
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ==================== CERTIFICATE GENERATION ROUTES ====================
+
+// Generate certificates for all participants in an event
+certRouter.post(
+  "/generateCertificatesForEvent/:eventId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const { certType } = req.body; // Certificate type: Appearance, Participation, Recognition
+      const issuedBy = req.user.id;
+
+      const eventIdInt = parseInt(eventId, 10);
+
+      if (isNaN(eventIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid event ID provided",
+        });
+      }
+
+      // Validate certificate type
+      const validCertTypes = ["Appearance", "Participation", "Recognition"];
+      const selectedCertType = certType || "Recognition"; // Default to Recognition
+
+      if (!validCertTypes.includes(selectedCertType)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid certificate type. Must be one of: ${validCertTypes.join(
+            ", "
+          )}`,
+        });
+      }
 
       console.log(
-        `🔍 [generateCertificates Route] Generating certificates for event: ${eventId}`
+        `🔍 [generateCertificatesForEvent] Generating ${selectedCertType} certificates for event: ${eventIdInt}`
       );
-      console.log(`📋 [generateCertificates Route] Issued by: ${issuedBy}`);
-
-      // Use hardcoded template ID since template is a file in project directory
-      const templateId = 1;
 
       const certificates = await certService.generateCertificatesForEvent(
-        eventId,
+        eventIdInt,
         issuedBy,
-        templateId
-      );
-      console.log(
-        `📊 [generateCertificates Route] Generated ${certificates.length} certificates`
+        null, // templateId
+        selectedCertType,
+        req.user.role,
+        req.user.schoolName
       );
 
       res.status(200).json({
         success: true,
-        message: `Successfully generated ${certificates.length} certificates`,
+        message: `${selectedCertType} certificates generated successfully`,
         certificates: certificates,
+        count: certificates.length,
       });
     } catch (error) {
-      console.error(`❌ [generateCertificates Route] Error:`, error);
+      console.error("Error generating certificates:", error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -2759,100 +3671,54 @@ certRouter.post(
   async (req, res) => {
     try {
       const { eventId, userId } = req.params;
-      const issuedBy = req.user.id; // Get from authenticated user
+      const { certType, eventRole } = req.body; // Certificate type and optional event role
+      const issuedBy = req.user.id;
 
-      console.log(
-        `🔍 [generateIndividualCertificate Route] Generating certificate for user: ${userId} in event: ${eventId}`
-      );
-      console.log(
-        `📋 [generateIndividualCertificate Route] Issued by: ${issuedBy}`
-      );
+      const eventIdInt = parseInt(eventId, 10);
+      const userIdInt = parseInt(userId, 10);
 
-      // Use hardcoded template ID since template is a file in project directory
-      const templateId = 1;
-
-      const certificate = await certService.generateIndividualCertificate(
-        eventId,
-        userId,
-        issuedBy,
-        templateId
-      );
-      console.log(
-        `📊 [generateIndividualCertificate Route] Generated certificate for user: ${userId}`
-      );
-
-      res.status(200).json({
-        success: true,
-        message: `Successfully generated certificate for participant`,
-        certificate: certificate,
-      });
-    } catch (error) {
-      console.error(`❌ [generateIndividualCertificate Route] Error:`, error);
-      res.status(400).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// Get all certificates
-certRouter.get("/getAllCertificates", authenticateToken, async (req, res) => {
-  try {
-    console.log(`🔍 [getAllCertificates Route] Fetching all certificates`);
-
-    const certificates = await certService.getAllCertificates();
-    console.log(
-      `📊 [getAllCertificates Route] Found ${certificates.length} certificates`
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Certificates fetched successfully",
-      certificates: certificates,
-    });
-  } catch (error) {
-    console.error(`❌ [getAllCertificates Route] Error:`, error);
-    res.status(400).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-// Get certificates by event
-certRouter.get(
-  "/getCertificatesByEvent/:eventId",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const { eventId } = req.params;
-      console.log(
-        `🔍 [getCertificatesByEvent Route] Fetching certificates for event: ${eventId}`
-      );
-
-      if (!eventId || isNaN(eventId)) {
-        console.log(
-          `❌ [getCertificatesByEvent Route] Invalid eventId: ${eventId}`
-        );
+      if (isNaN(eventIdInt) || isNaN(userIdInt)) {
         return res.status(400).json({
           success: false,
-          error: "Valid event ID is required",
+          error: "Invalid event ID or user ID provided",
         });
       }
 
-      const certificates = await certService.getCertificatesByEvent(eventId);
+      // Validate certificate type
+      const validCertTypes = ["Appearance", "Participation", "Recognition"];
+      const selectedCertType = certType || "Recognition"; // Default to Recognition
+
+      if (!validCertTypes.includes(selectedCertType)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid certificate type. Must be one of: ${validCertTypes.join(
+            ", "
+          )}`,
+        });
+      }
+
       console.log(
-        `📊 [getCertificatesByEvent Route] Found ${certificates.length} certificates for event ${eventId}`
+        `🔍 [generateIndividualCertificate] Generating ${selectedCertType} certificate for user: ${userIdInt} in event: ${eventIdInt}, eventRole: ${
+          eventRole || "default"
+        }`
+      );
+
+      const certificate = await certService.generateIndividualCertificate(
+        eventIdInt,
+        userIdInt,
+        issuedBy,
+        null, // templateId
+        selectedCertType,
+        eventRole || null // Optional event role for Recognition certificates
       );
 
       res.status(200).json({
         success: true,
-        message: "Certificates fetched successfully",
-        certificates: certificates,
+        message: `${selectedCertType} certificate generated successfully`,
+        certificate: certificate,
       });
     } catch (error) {
-      console.error(`❌ [getCertificatesByEvent Route] Error:`, error);
+      console.error("Error generating individual certificate:", error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -2868,66 +3734,40 @@ certRouter.get(
   async (req, res) => {
     try {
       const { certificateId } = req.params;
-      console.log(
-        `🔍 [downloadCertificate Route] Downloading certificate: ${certificateId}`
-      );
+      const certificateIdInt = parseInt(certificateId, 10);
 
-      if (!certificateId || isNaN(certificateId)) {
-        console.log(
-          `❌ [downloadCertificate Route] Invalid certificateId: ${certificateId}`
-        );
+      if (isNaN(certificateIdInt)) {
         return res.status(400).json({
           success: false,
-          error: "Valid certificate ID is required",
+          error: "Invalid certificate ID provided",
         });
       }
 
-      // Get certificate details
-      const certificate = await certService.getCertificateById(certificateId);
-
-      if (!certificate) {
-        return res.status(404).json({
-          success: false,
-          error: "Certificate not found",
-        });
-      }
-
-      // Construct PDF path based on certificate details
-      const path = require("path");
-      const sanitizedName = certificate.user.fullName.replace(
-        /[^a-zA-Z0-9]/g,
-        "_"
-      );
-      const pdfPath = path.join(
-        __dirname,
-        "../../certificates",
-        `Certificate_${certificate.certificateNumber}_${sanitizedName}.pdf`
+      console.log(
+        `🔍 [downloadCertificate] Downloading certificate: ${certificateIdInt}`
       );
 
-      // Check if file exists
-      const fs = require("fs");
-      if (!fs.existsSync(pdfPath)) {
+      const result = await certService.downloadCertificate(certificateIdInt);
+
+      if (!result || !result.pdfBuffer) {
         return res.status(404).json({
           success: false,
-          error: "Certificate file not found on server",
+          error: "Certificate PDF not found",
         });
       }
 
-      // Set headers for PDF download
+      // Set appropriate headers for PDF download
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="Certificate_${certificate.certificateNumber}.pdf"`
+        `attachment; filename="Certificate_${result.certificateNumber}.pdf"`
       );
+      res.setHeader("Content-Length", result.pdfBuffer.length);
 
-      // Send the file
-      res.sendFile(pdfPath);
-
-      console.log(
-        `✅ [downloadCertificate Route] Certificate downloaded: ${certificate.certificateNumber}`
-      );
+      // Send the PDF buffer
+      res.send(result.pdfBuffer);
     } catch (error) {
-      console.error(`❌ [downloadCertificate Route] Error:`, error);
+      console.error("Error downloading certificate:", error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -2936,36 +3776,30 @@ certRouter.get(
   }
 );
 
-// ==================== DURATION ROUTES ====================
+// ==================== TRAINED PARTICIPANTS ROUTES ====================
 
-// Get attendance durations for a specific attendance record
+// Get all trained participants
 certRouter.get(
-  "/getAttendanceDurations/:attendanceId",
+  "/getTrainedParticipants",
   authenticateToken,
   async (req, res) => {
     try {
-      const { attendanceId } = req.params;
-      console.log(
-        `🔍 [getAttendanceDurations Route] Getting durations for attendance: ${attendanceId}`
+      // Pass proponentId if user is a proponent
+      const proponentId = req.user.role === "proponent" ? req.user.id : null;
+
+      const participants = await certService.getTrainedParticipants(
+        req.user.role,
+        req.user.schoolName,
+        proponentId
       );
-
-      if (!attendanceId || isNaN(attendanceId)) {
-        return res.status(400).json({
-          success: false,
-          error: "Valid attendance ID is required",
-        });
-      }
-
-      const result = await certService.getAttendanceDurations(attendanceId);
-      console.log(`📊 [getAttendanceDurations Route] Duration data:`, result);
 
       res.status(200).json({
         success: true,
-        message: "Attendance durations fetched successfully",
-        data: result,
+        message: "Trained participants fetched successfully",
+        participants: participants,
       });
     } catch (error) {
-      console.error(`❌ [getAttendanceDurations Route] Error:`, error);
+      console.error("Error fetching trained participants:", error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -2974,83 +3808,89 @@ certRouter.get(
   }
 );
 
-// Get duration statistics for an event
+// Get dashboard statistics
+certRouter.get("/getDashboardStats", authenticateToken, async (req, res) => {
+  try {
+    const stats = await certService.getDashboardStats(
+      req.user.role,
+      req.user.schoolName
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Dashboard statistics fetched successfully",
+      stats: stats,
+    });
+  } catch (error) {
+    console.error("Error fetching dashboard statistics:", error);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// ==================== REPORTS ROUTES ====================
+
+// Generate Excel attendance report for an event
 certRouter.get(
-  "/getEventDurationStats/:eventId",
+  "/generateAttendanceReport/:eventId",
   authenticateToken,
   async (req, res) => {
     try {
       const { eventId } = req.params;
+      const userRole = req.user.role;
+
       console.log(
-        `🔍 [getEventDurationStats Route] Getting duration stats for event: ${eventId}`
+        `📊 [generateAttendanceReport] User ${req.user.id} (${userRole}) requesting report for event ${eventId}`
       );
 
-      if (!eventId || isNaN(eventId)) {
-        return res.status(400).json({
+      // Check if user has permission (proponent or admin only)
+      if (userRole !== "proponent" && userRole !== "administrator") {
+        return res.status(403).json({
           success: false,
-          error: "Valid event ID is required",
+          error:
+            "Access denied. Only proponents and administrators can generate reports.",
         });
       }
 
-      const result = await certService.getEventDurationStats(eventId);
-      console.log(`📊 [getEventDurationStats Route] Stats:`, result);
+      // Get the report data
+      const reportData = await certService.getEventAttendanceReport(eventId);
 
-      res.status(200).json({
-        success: true,
-        message: "Event duration statistics fetched successfully",
-        data: result,
-      });
-    } catch (error) {
-      console.error(`❌ [getEventDurationStats Route] Error:`, error);
-      res.status(400).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
+      // Generate Excel file
+      const {
+        generateEventAttendanceExcel,
+      } = require("../Utils/generateExcelReport");
+      const excelBuffer = await generateEventAttendanceExcel(reportData);
 
-// Record attendance phase (AM In, AM Out, PM In, PM Out)
-certRouter.post(
-  "/recordAttendancePhase",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const { eventId, dayNumber, attendancePhase, participantLocation } =
-        req.body;
-      const userId = req.user.id;
+      // Format filename
+      const eventName = reportData.event.name
+        .replace(/[^a-zA-Z0-9]/g, "_")
+        .substring(0, 50);
+      const fileName = `Attendance_Report_${eventName}_${Date.now()}.xlsx`;
+
+      // Set headers for file download
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fileName}"`
+      );
+      res.setHeader("Content-Length", excelBuffer.length);
 
       console.log(
-        `🔍 [recordAttendancePhase Route] Recording ${attendancePhase} for user ${userId}, event ${eventId}, day ${dayNumber}`
+        `✅ [generateAttendanceReport] Excel report generated: ${fileName}`
       );
 
-      if (!eventId || !dayNumber || !attendancePhase) {
-        return res.status(400).json({
-          success: false,
-          error: "Event ID, day number, and attendance phase are required",
-        });
-      }
-
-      const result = await certService.recordAttendancePhase(
-        userId,
-        parseInt(eventId),
-        parseInt(dayNumber),
-        attendancePhase,
-        participantLocation
-      );
-
-      console.log(`📊 [recordAttendancePhase Route] Result:`, result);
-
-      res.status(200).json({
-        success: true,
-        message: result.message,
-        data: result,
-      });
+      // Send the buffer
+      res.send(excelBuffer);
     } catch (error) {
-      console.error(`❌ [recordAttendancePhase Route] Error:`, error);
+      console.error("❌ [generateAttendanceReport] Error:", error);
       res.status(400).json({
         success: false,
-        error: error.message,
+        error: error.message || "Failed to generate attendance report",
       });
     }
   }

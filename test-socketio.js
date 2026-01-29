@@ -11,7 +11,10 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: 
+    // "http://localhost:5173"
+    "https://certigo.depedimuscity.com"
+    ,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
   },
@@ -65,14 +68,14 @@ io.on("connection", (socket) => {
 const port = 5017; // Different port for testing
 
 server.listen(port, () => {
-  console.log(`🧪 Socket.io Test Server running on port ${port}`);
+  console.log(`🧪 Socket.io Server running on port ${port}`);
   console.log(`🔌 Ready for Socket.io connections`);
-  console.log(`📡 Test URL: http://localhost:${port}`);
-  console.log(`\n📋 Available test events:`);
-  console.log(`   - join-event-room: Join a specific event room`);
-  console.log(`   - test-broadcast: Test global broadcasting`);
-  console.log(`   - test-room-broadcast: Test room-specific broadcasting`);
-  console.log(`\n🚀 Server is ready for testing!`);
+  console.log(`📡 Test URL: https://sdoic-certigo.depedimuscity.com:${port}`);
+  // console.log(`\n📋 Available test events:`);
+  // console.log(`   - join-event-room: Join a specific event room`);
+  // console.log(`   - test-broadcast: Test global broadcasting`);
+  // console.log(`   - test-room-broadcast: Test room-specific broadcasting`);
+  // console.log(`\n🚀 Server is ready for testing!`);
 });
 
 // Graceful shutdown

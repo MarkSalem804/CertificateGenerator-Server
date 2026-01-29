@@ -125,9 +125,9 @@ async function registerUser(userData) {
   }
 }
 
-async function getAllUsers() {
+async function getAllUsers(userRole = null, userSchoolName = null) {
   try {
-    const users = await userORM.getAllUsers();
+    const users = await userORM.getAllUsers(userRole, userSchoolName);
     return {
       success: true,
       message: "Users fetched successfully",

@@ -90,9 +90,40 @@ async function findUserById(id) {
   }
 }
 
-async function getAllUsers() {
+async function getAllUsers(userRole = null, userSchoolName = null) {
   try {
+    console.log("🔍 [getAllUsers DB] Parameters:", {
+      userRole,
+      userSchoolName,
+    });
+
+    // Build where clause based on user role
+    let whereClause = {};
+
+    // School Head: Only show users from the same school
+    if (userRole === "school_head" && userSchoolName) {
+      whereClause = {
+        school: {
+          name: userSchoolName,
+        },
+      };
+      console.log(
+        "🏫 [getAllUsers DB] School Head filtering by school:",
+        userSchoolName
+      );
+      console.log(
+        "🔍 [getAllUsers DB] Where clause:",
+        JSON.stringify(whereClause, null, 2)
+      );
+    } else {
+      console.log(
+        "👤 [getAllUsers DB] No filtering applied - showing all users"
+      );
+    }
+    // Add other role filters here if needed in the future
+
     const users = await prisma.user.findMany({
+      where: whereClause,
       include: {
         designation: {
           select: {
@@ -126,6 +157,12 @@ async function getAllUsers() {
       school: null, // Remove the full school object
     }));
 
+    console.log(`📊 [getAllUsers DB] Found ${usersWithNames.length} users`);
+    console.log(
+      "👥 [getAllUsers DB] Users found:",
+      usersWithNames.map((u) => ({ name: u.fullName, school: u.schoolName }))
+    );
+
     return usersWithNames;
   } catch (error) {
     throw new Error("Error getting all users: " + error.message);
@@ -143,6 +180,7 @@ async function createUser(userData) {
       role,
       designationId,
       position,
+      category,
     } = userData;
 
     console.log("🔍 Creating user with data:", {
@@ -153,6 +191,7 @@ async function createUser(userData) {
       role,
       designationId,
       position,
+      category,
     });
 
     // Check if user already exists
@@ -247,6 +286,7 @@ async function createUser(userData) {
             : "participant", // Default to participant if no valid role specified
         designationId: designationId ? parseInt(designationId) : null,
         position: position || null,
+        category: category || null,
         isPasswordChanged: false, // New users haven't changed their password yet
         designationName, // Save the name directly
         unitName, // Save the name directly

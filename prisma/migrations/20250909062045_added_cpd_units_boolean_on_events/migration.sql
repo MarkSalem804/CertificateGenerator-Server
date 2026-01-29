@@ -1,3 +1,0 @@
--- AlterTable
-ALTER TABLE `event` ADD COLUMN `cpdUnits` BOOLEAN NULL DEFAULT false,
-    ADD COLUMN `cpdUnitsCount` INTEGER NULL DEFAULT 0;

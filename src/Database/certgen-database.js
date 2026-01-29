@@ -170,7 +170,7 @@ async function addEvent(eventData) {
         venue: eventData.venue || null,
         eventLatitude: eventData.eventLatitude || null,
         eventLongitude: eventData.eventLongitude || null,
-        geofencingRadius: eventData.geofencingRadius || 50,
+        geofencingRadius: eventData.geofencingRadius || 1000,
         maxAttendees: eventData.maxAttendees || 50,
         currentAttendees: 0, // Always start with 0 attendees
         status: eventData.status || "Draft",
@@ -179,12 +179,24 @@ async function addEvent(eventData) {
         numberOfDays: eventData.numberOfDays || 1,
         startTime: eventData.startTime || null,
         endTime: eventData.endTime || null,
+        attendanceTimeOption: eventData.attendanceTimeOption || "government",
+        customTimeSchedule: eventData.customTimeSchedule || null,
+        amInStartTime: eventData.amInStartTime || null,
+        amInEndTime: eventData.amInEndTime || null,
+        amOutStartTime: eventData.amOutStartTime || null,
+        amOutEndTime: eventData.amOutEndTime || null,
+        pmInStartTime: eventData.pmInStartTime || null,
+        pmInEndTime: eventData.pmInEndTime || null,
+        pmOutStartTime: eventData.pmOutStartTime || null,
+        pmOutEndTime: eventData.pmOutEndTime || null,
         createdBy: eventData.createdBy || null,
         fundSourceId: eventData.fundSourceId || null,
         pdProgramId: eventData.pdProgramId || null,
         totalApprovedBudget: eventData.totalApprovedBudget || null,
         cpdUnits: eventData.cpdUnits || false,
-        cpdUnitsCount: eventData.cpdUnitsCount || 0,
+        cpdUnitsCount: parseFloat(eventData.cpdUnitsCount) || 0,
+        prcNumber: eventData.prcNumber || null,
+        eventDates: eventData.eventDates || null,
       },
       include: {
         creator: {
@@ -240,9 +252,27 @@ async function addEvent(eventData) {
   }
 }
 
-async function getAllEvents() {
+async function getAllEvents(
+  userId = null,
+  userRole = null,
+  userSchoolName = null
+) {
   try {
+    // Build where clause based on user role
+    let whereClause = {};
+
+    // School Head: Only show events created by users from the same school
+    if (userRole === "school_head" && userSchoolName) {
+      whereClause = {
+        creator: {
+          schoolName: userSchoolName,
+        },
+      };
+    }
+    // Add other role filters here if needed in the future
+
     const events = await prisma.event.findMany({
+      where: whereClause,
       include: {
         creator: {
           select: {
@@ -450,11 +480,26 @@ async function updateEvent(eventId, updateData) {
         numberOfDays: updateData.numberOfDays,
         startTime: updateData.startTime,
         endTime: updateData.endTime,
+        attendanceTimeOption: updateData.attendanceTimeOption,
+        customTimeSchedule: updateData.customTimeSchedule,
+        amInStartTime: updateData.amInStartTime,
+        amInEndTime: updateData.amInEndTime,
+        amOutStartTime: updateData.amOutStartTime,
+        amOutEndTime: updateData.amOutEndTime,
+        pmInStartTime: updateData.pmInStartTime,
+        pmInEndTime: updateData.pmInEndTime,
+        pmOutStartTime: updateData.pmOutStartTime,
+        pmOutEndTime: updateData.pmOutEndTime,
         fundSourceId: updateData.fundSourceId,
         pdProgramId: updateData.pdProgramId,
         totalApprovedBudget: updateData.totalApprovedBudget,
         cpdUnits: updateData.cpdUnits,
-        cpdUnitsCount: updateData.cpdUnitsCount,
+        cpdUnitsCount:
+          updateData.cpdUnitsCount !== undefined
+            ? parseFloat(updateData.cpdUnitsCount)
+            : undefined,
+        prcNumber: updateData.prcNumber,
+        eventDates: updateData.eventDates,
       },
       include: {
         creator: {
@@ -1473,7 +1518,7 @@ async function generateAttendanceTableQRCode(eventId, dayNumber) {
       location: event.location,
       latitude: event.eventLatitude,
       longitude: event.eventLongitude,
-      geofencingRadius: event.geofencingRadius || 50,
+      geofencingRadius: event.geofencingRadius || 1000,
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: attendanceTable.id,
@@ -1547,7 +1592,7 @@ async function generateMealAttendanceTableQRCode(eventId, dayNumber) {
       location: event.location,
       latitude: event.eventLatitude,
       longitude: event.eventLongitude,
-      geofencingRadius: event.geofencingRadius || 50,
+      geofencingRadius: event.geofencingRadius || 1000,
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: mealAttendanceTable.id,
@@ -1622,7 +1667,7 @@ async function generateAMOutAttendanceQRCode(eventId, dayNumber) {
       location: event.location,
       latitude: event.eventLatitude,
       longitude: event.eventLongitude,
-      geofencingRadius: event.geofencingRadius || 50,
+      geofencingRadius: event.geofencingRadius || 1000,
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: attendanceTable.id,
@@ -1700,7 +1745,7 @@ async function generatePMInAttendanceQRCode(eventId, dayNumber) {
       location: event.location,
       latitude: event.eventLatitude,
       longitude: event.eventLongitude,
-      geofencingRadius: event.geofencingRadius || 50,
+      geofencingRadius: event.geofencingRadius || 1000,
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: attendanceTable.id,
@@ -1778,7 +1823,7 @@ async function generatePMOutAttendanceQRCode(eventId, dayNumber) {
       location: event.location,
       latitude: event.eventLatitude,
       longitude: event.eventLongitude,
-      geofencingRadius: event.geofencingRadius || 50,
+      geofencingRadius: event.geofencingRadius || 1000,
       startTime: event.startTime,
       endTime: event.endTime,
       tableId: attendanceTable.id,
@@ -2259,10 +2304,14 @@ async function createCertificate(certificateData) {
     const certificate = await prisma.certificate.create({
       data: {
         certificateNumber: certificateData.certificateNumber,
+        certType: certificateData.certType || null,
+        eventRole: certificateData.eventRole || null,
         userId: certificateData.userId,
         eventId: certificateData.eventId,
         issuedBy: certificateData.issuedBy,
         templateId: certificateData.templateId || null,
+        duration: certificateData.duration || null,
+        certStatus: "Not Signed",
       },
       include: {
         user: {
@@ -2365,6 +2414,205 @@ async function getAllCertificates() {
   }
 }
 
+// Get certificates for a specific user
+async function getUserCertificates(userId) {
+  try {
+    console.log(
+      `🔍 [getUserCertificates] Fetching certificates for user: ${userId}`
+    );
+
+    const certificates = await prisma.certificate.findMany({
+      where: {
+        userId: parseInt(userId),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            startTime: true,
+            endTime: true,
+            location: true,
+            venue: true,
+            cpdUnits: true,
+            createdBy: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    console.log(
+      `📊 [getUserCertificates] Found ${certificates.length} certificates for user ${userId}`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error fetching user certificates: ${error.message}`);
+  }
+}
+
+// Get certificates for events created by a specific proponent
+async function getCertificatesByProponent(proponentId) {
+  try {
+    console.log(
+      `🔍 [getCertificatesByProponent] Fetching certificates for events created by proponent: ${proponentId}`
+    );
+
+    const certificates = await prisma.certificate.findMany({
+      where: {
+        event: {
+          createdBy: parseInt(proponentId),
+        },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            startTime: true,
+            endTime: true,
+            location: true,
+            venue: true,
+            cpdUnits: true,
+            createdBy: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    console.log(
+      `📊 [getCertificatesByProponent] Found ${certificates.length} certificates for proponent ${proponentId}`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error fetching proponent certificates: ${error.message}`);
+  }
+}
+
+// Get certificates by school (for school heads)
+async function getCertificatesBySchool(schoolName) {
+  try {
+    console.log(
+      `🔍 [getCertificatesBySchool] Fetching certificates for school: ${schoolName}`
+    );
+
+    const certificates = await prisma.certificate.findMany({
+      where: {
+        user: {
+          schoolName: schoolName,
+        },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            designationName: true,
+            unitName: true,
+            schoolName: true,
+            position: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            name: true,
+            date: true,
+            startTime: true,
+            endTime: true,
+            location: true,
+            venue: true,
+            cpdUnits: true,
+            createdBy: true,
+          },
+        },
+        issuer: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+          },
+        },
+        template: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    console.log(
+      `📊 [getCertificatesBySchool] Found ${certificates.length} certificates for school ${schoolName}`
+    );
+    return certificates;
+  } catch (error) {
+    throw new Error(`Error fetching school certificates: ${error.message}`);
+  }
+}
+
 // Get certificates by event
 async function getCertificatesByEvent(eventId) {
   try {
@@ -2428,17 +2676,31 @@ async function getCertificatesByEvent(eventId) {
 }
 
 // Get participants with attendance records for an event
-async function getParticipantsWithAttendance(eventId) {
+async function getParticipantsWithAttendance(
+  eventId,
+  userRole = null,
+  userSchoolName = null
+) {
   try {
     console.log(
       `🔍 [getParticipantsWithAttendance] Fetching participants with attendance for event: ${eventId}`
     );
 
+    // Build where clause based on user role
+    let whereClause = {
+      eventId: parseInt(eventId),
+    };
+
+    // School Head: Only show participants from the same school
+    if (userRole === "school_head" && userSchoolName) {
+      whereClause.user = {
+        schoolName: userSchoolName,
+      };
+    }
+
     // Get all unique users who have attendance records for this event
     const participants = await prisma.attendance.findMany({
-      where: {
-        eventId: parseInt(eventId),
-      },
+      where: whereClause,
       include: {
         user: {
           select: {
@@ -2717,6 +2979,314 @@ async function getCertificateByUserAndEvent(userId, eventId) {
   }
 }
 
+// ==================== TRAINED PARTICIPANTS DATABASE FUNCTIONS ====================
+
+// Get trained participants with their statistics
+async function getTrainedParticipants(
+  userRole = null,
+  userSchoolName = null,
+  proponentId = null
+) {
+  try {
+    console.log(
+      `🔍 [getTrainedParticipants] Fetching trained participants for role: ${userRole}, school: ${userSchoolName}, proponent: ${proponentId}`
+    );
+
+    // Build where clause based on user role
+    let whereClause = {};
+
+    if (userRole === "school_head" && userSchoolName) {
+      whereClause.schoolName = userSchoolName;
+    }
+
+    // For proponents, filter by events they created
+    if (userRole === "proponent" && proponentId) {
+      whereClause.attendance = {
+        some: {
+          event: {
+            createdBy: parseInt(proponentId),
+          },
+        },
+      };
+    } else {
+      whereClause.attendance = {
+        some: {}, // Has at least one attendance record
+      };
+    }
+
+    // Get all users with at least one attendance record
+    const participants = await prisma.user.findMany({
+      where: whereClause,
+      include: {
+        certificates: {
+          select: {
+            id: true,
+            createdAt: true,
+            event: {
+              select: {
+                id: true,
+                name: true,
+                date: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        attendance: {
+          select: {
+            id: true,
+            eventId: true,
+            date: true,
+          },
+          orderBy: {
+            date: "desc",
+          },
+        },
+      },
+    });
+
+    // Process participants to calculate statistics
+    const processedParticipants = participants.map((participant) => {
+      // Get unique events from attendance records
+      const uniqueEventIds = new Set(
+        participant.attendance.map((a) => a.eventId)
+      );
+      const trainingCompleted = uniqueEventIds.size;
+
+      // Get last training date
+      const lastTraining =
+        participant.attendance.length > 0
+          ? participant.attendance[0].date
+          : null;
+
+      // Count certificates
+      const certificatesCount = participant.certificates.length;
+
+      return {
+        id: participant.id,
+        name: participant.fullName,
+        email: participant.email,
+        position: participant.position || participant.designationName || "N/A",
+        school: participant.schoolName || participant.unitName || "N/A",
+        role: participant.role,
+        trainingCompleted: trainingCompleted,
+        lastTraining: lastTraining,
+        certificates: certificatesCount,
+        status: trainingCompleted > 0 ? "active" : "inactive",
+        department:
+          participant.unitName || participant.designationName || "N/A",
+      };
+    });
+
+    console.log(
+      `✅ [getTrainedParticipants] Found ${processedParticipants.length} trained participants`
+    );
+
+    return processedParticipants;
+  } catch (error) {
+    throw new Error(`Error getting trained participants: ${error.message}`);
+  }
+}
+
+// Dashboard Statistics
+async function getDashboardStats(userRole, schoolName = null) {
+  try {
+    // Base filter for school_head role
+    const schoolFilter =
+      userRole === "school_head" && schoolName ? { schoolName } : {};
+
+    // 1. Total Users
+    const totalUsers = await prisma.user.count({
+      where: {
+        role: "participant",
+        ...schoolFilter,
+      },
+    });
+
+    // 2. Total no. of Trainings (Events)
+    const totalTrainings = await prisma.event.count({
+      where: schoolFilter.schoolName
+        ? {
+            OR: [
+              { createdBy: { schoolName: schoolFilter.schoolName } },
+              { venue: { contains: schoolFilter.schoolName } },
+            ],
+          }
+        : {},
+    });
+
+    // 3. Total no. of Trained Participants (users with at least one attendance record)
+    const trainedParticipantsResult = await prisma.user.findMany({
+      where: {
+        role: "participant",
+        ...schoolFilter,
+        attendance: {
+          some: {},
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    const totalTrainedParticipants = trainedParticipantsResult.length;
+
+    // 4. Percentage of Accomplishment (Trained / Total Users)
+    const percentageAccomplishment =
+      totalUsers > 0
+        ? ((totalTrainedParticipants / totalUsers) * 100).toFixed(1)
+        : 0;
+
+    // 5. Recent Activity - Last 5 events
+    const recentActivity = await prisma.event.findMany({
+      where: schoolFilter.schoolName
+        ? {
+            OR: [
+              { createdBy: { schoolName: schoolFilter.schoolName } },
+              { venue: { contains: schoolFilter.schoolName } },
+            ],
+          }
+        : {},
+      take: 5,
+      orderBy: {
+        createdAt: "desc",
+      },
+      include: {
+        creator: {
+          select: {
+            fullName: true,
+            email: true,
+          },
+        },
+        _count: {
+          select: {
+            attendance: true,
+          },
+        },
+      },
+    });
+
+    return {
+      totalUsers,
+      totalTrainings,
+      totalTrainedParticipants,
+      percentageAccomplishment: parseFloat(percentageAccomplishment),
+      recentActivity: recentActivity.map((event) => ({
+        id: event.id,
+        eventName: event.name,
+        eventDate: event.date,
+        location: event.location,
+        venue: event.venue,
+        status: event.status,
+        participants: event._count.attendance,
+        maxAttendees: event.maxAttendees,
+        createdBy: event.creator.fullName,
+        createdAt: event.createdAt,
+      })),
+    };
+  } catch (error) {
+    console.error("Error fetching dashboard stats:", error);
+    throw new Error("Error fetching dashboard statistics: " + error.message);
+  }
+}
+
+// Get event attendance report with detailed participant information
+async function getEventAttendanceReport(eventId) {
+  try {
+    console.log(
+      `🔍 [getEventAttendanceReport] Fetching report for event ID: ${eventId}`
+    );
+
+    // Get event details
+    const event = await prisma.event.findUnique({
+      where: { id: parseInt(eventId) },
+      include: {
+        creator: {
+          select: {
+            fullName: true,
+            email: true,
+            schoolName: true,
+            unitName: true,
+          },
+        },
+      },
+    });
+
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    // Get all attendance records for this event
+    const attendanceRecords = await prisma.attendance.findMany({
+      where: { eventId: parseInt(eventId) },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            position: true,
+            schoolName: true,
+            unitName: true,
+          },
+        },
+      },
+      orderBy: [{ dayNumber: "asc" }, { user: { fullName: "asc" } }],
+    });
+
+    // Get all registered participants for this event
+    const registrations = await prisma.eventRegistration.findMany({
+      where: { eventId: parseInt(eventId) },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            position: true,
+            schoolName: true,
+            unitName: true,
+          },
+        },
+      },
+      orderBy: {
+        user: { fullName: "asc" },
+      },
+    });
+
+    // Get meal attendance if available
+    const mealAttendance = await prisma.mealAttendance.findMany({
+      where: { eventId: parseInt(eventId) },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+          },
+        },
+      },
+      orderBy: [{ dayNumber: "asc" }, { user: { fullName: "asc" } }],
+    });
+
+    console.log(
+      `✅ [getEventAttendanceReport] Found ${attendanceRecords.length} attendance records, ${registrations.length} registrations`
+    );
+
+    return {
+      event,
+      attendanceRecords,
+      registrations,
+      mealAttendance,
+    };
+  } catch (error) {
+    console.error(`❌ [getEventAttendanceReport] Error:`, error);
+    throw error;
+  }
+}
+
 module.exports = {
   // Event functions
   addEvent,
@@ -2809,6 +3379,9 @@ module.exports = {
   // Certificate functions
   createCertificate,
   getAllCertificates,
+  getUserCertificates,
+  getCertificatesByProponent,
+  getCertificatesBySchool,
   getCertificatesByEvent,
   getParticipantsWithAttendance,
   updateCertificate,
@@ -2816,6 +3389,15 @@ module.exports = {
   getTemplateById,
   getCertificateById,
   getCertificateByUserAndEvent,
+
+  // Trained Participants functions
+  getTrainedParticipants,
+
+  // Dashboard Statistics functions
+  getDashboardStats,
+
+  // Reports functions
+  getEventAttendanceReport,
 
   // Email functions
   // sendEmail,

@@ -1,6 +1,7 @@
 const express = require("express");
 const userRouter = require("../User/user-controller");
 const certRouter = require("../Routes/certgen-controller");
+const signatureRouter = require("../Controllers/signature-controller");
 
 const Routes = (app) => {
   const router = express.Router();
@@ -8,6 +9,7 @@ const Routes = (app) => {
   // API Routes
   router.use("/users", userRouter);
   router.use("/certificate", certRouter);
+  router.use("/signature", signatureRouter);
 
   // Health check endpoint
   router.get("/health", (req, res) => {
